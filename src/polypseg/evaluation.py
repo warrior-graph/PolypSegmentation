@@ -22,7 +22,7 @@ from polypseg.segmenter import CLASSIFIERS, InteractiveSegmenter, SegmenterConfi
 from polypseg.simulation import simulate
 from polypseg.superpixels import METHODS, SuperpixelConfig
 
-MODULES = ("boundary_edges", "radial_prior", "pixel_refine", "relief_map")
+MODULES = ("boundary_edges", "radial_prior", "pixel_refine", "relief_map", "geodesic_prior")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
@@ -74,7 +74,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--balance-groups", action="store_true", help="cada grupo de descritores pesa o mesmo no grafo")
     p.add_argument(
         "--modules",
-        default="boundary_edges,radial_prior,pixel_refine",
+        default="boundary_edges,radial_prior,pixel_refine,geodesic_prior",
         help=f"módulos ligados, separados por vírgula ({', '.join(MODULES)}); 'none' desliga todos",
     )
     p.add_argument("--smooth", type=float, default=0.0, help="σ em px da suavização final da borda (0 desliga)")
@@ -98,7 +98,8 @@ def main(argv: list[str] | None = None) -> None:
         classifier=args.classifier,
         border_background=args.border_background,
         balance_groups=args.balance_groups,
-        **{m: m in modules for m in MODULES},
+        **{m: m in modules for m in MODULES if m != "geodesic_prior"},
+        geodesic_prior=SegmenterConfig.geodesic_prior if "geodesic_prior" in modules else 0.0,
         smooth_sigma=args.smooth,
     )
     pairs = find_pairs(args.data)

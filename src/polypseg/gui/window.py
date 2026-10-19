@@ -58,6 +58,7 @@ MODULE_LABELS = {
     "radial_prior": "Estrela em volta do clique",
     "pixel_refine": "Refino da borda por pixel",
     "relief_map": "Relevo local no mapa de borda",
+    "geodesic_prior": "Prior geodésico",
 }
 
 
@@ -235,7 +236,7 @@ class MainWindow(QMainWindow):
         defaults = SegmenterConfig()
         for key, text in MODULE_LABELS.items():
             box = QCheckBox(text)
-            box.setChecked(getattr(defaults, key))
+            box.setChecked(bool(getattr(defaults, key)))
             box.toggled.connect(self.recompute)
             mod_layout.addWidget(box)
             self.module_checks[key] = box
@@ -320,6 +321,9 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- configuração
     def current_config(self) -> SegmenterConfig:
         c = self.feat_checks
+        modules = {key: box.isChecked() for key, box in self.module_checks.items()}
+        # O prior geodésico é um peso: a caixa liga o valor padrão ou desliga.
+        modules["geodesic_prior"] = SegmenterConfig.geodesic_prior if modules["geodesic_prior"] else 0.0
         return SegmenterConfig(
             superpixels=SuperpixelConfig(self.method_combo.currentText(), self.n_spin.value(), self.comp_spin.value()),
             features=FeatureConfig(
@@ -330,7 +334,7 @@ class MainWindow(QMainWindow):
             classifier=self.clf_combo.currentData(),
             border_background=self.border_combo.currentData(),
             smooth_sigma=self.smooth_spin.value(),
-            **{key: box.isChecked() for key, box in self.module_checks.items()},
+            **modules,
         )
 
     # ---------------------------------------------------------------- arquivos

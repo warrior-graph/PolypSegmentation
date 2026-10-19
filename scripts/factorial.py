@@ -53,7 +53,8 @@ def main() -> None:
     with ProcessPoolExecutor(max(args.jobs, 1)) as pool:
         for levels in itertools.product((False, True), repeat=len(MODULES)):
             on = dict(zip(MODULES, levels))
-            config = SegmenterConfig(**{field: on[m] for m, field in MODULES.items()})
+            # Prior geodésico desligado, para "nenhum" continuar sendo o método anterior.
+            config = SegmenterConfig(**{field: on[m] for m, field in MODULES.items()}, geodesic_prior=0.0)
             curves = list(pool.map(partial(evaluate_pair, config=config, max_clicks=10, max_side=512), pairs))
             tag = "+".join(m for m in MODULES if on[m]) or "nenhum"
             with (args.out / f"{tag}.csv").open("w", newline="") as fh:

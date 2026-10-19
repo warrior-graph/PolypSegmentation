@@ -46,7 +46,7 @@ class SegmenterConfig:
     # Prior geodésico (Bai e Sapiro, 2007; 0 desliga): d_fundo / (d_pólipo + d_fundo), com as
     # distâncias geodésicas aos cliques de pólipo e às sementes de fundo, peso relativo ao grau e
     # dividido pelo nº de cliques, como o da estrela.
-    geodesic_prior: float = 0.0
+    geodesic_prior: float = 0.2
     # Cada grupo de descritores pesa o mesmo na distância do grafo, qualquer que seja o número de colunas.
     balance_groups: bool = False
     # Corta arestas cuja fronteira coincide com o mapa de borda (vale no canal B + gradiente).

@@ -79,8 +79,8 @@ do PNG da máscara é gravado um `.json` com os cliques, a configuração e o
 
 No painel dá para trocar o algoritmo de superpixels (SLIC, Felzenszwalb,
 watershed), a quantidade (10 a 20000) e a compacidade, os grupos de descritores, o
-modelo e os módulos do método (arestas de borda, estrela, refino por pixel, relevo
-local e suavização da borda). Em "Visualização" escolhem-se as cores da máscara,
+modelo e os módulos do método (arestas de borda, estrela, prior geodésico, refino
+por pixel, relevo local e suavização da borda). Em "Visualização" escolhem-se as cores da máscara,
 das fronteiras e do gabarito e a espessura das fronteiras; essas preferências ficam
 salvas entre sessões.
 
@@ -113,8 +113,13 @@ salvas entre sessões.
    relativo ao grau médio do grafo e dividido pelo número de cliques.
 6. **Propagação:** os superpixels clicados são sementes. Os superpixels da borda
    da imagem e os encostados na moldura preta entram como fundo, a menos que tenham
-   sido clicados como pólipo. Um *random walker* com o prior acima calcula a
-   probabilidade de pólipo de cada superpixel.
+   sido clicados como pólipo. Um *random walker* com os priors calcula a
+   probabilidade de pólipo de cada superpixel. Além da estrela, entra um **prior
+   geodésico** (`geodesic_prior`, Bai e Sapiro, 2007): cada superpixel é puxado para
+   d_fundo / (d_pólipo + d_fundo), com as distâncias de caminho mínimo no próprio grafo
+   (custo −log w por aresta, a floresta de caminhos mínimos da IFT de Falcão et al.,
+   2004) até os cliques de pólipo e até as sementes de fundo. O peso (0,2) é relativo
+   ao grau médio e dividido pelo número de cliques, como o da estrela.
 7. **Refino por pixel** (`pixel_refine`): um random walker por pixel (Grady, 2006)
    decide só a faixa de ±14 px em volta da borda da máscara, com o interior e o
    exterior da faixa como sementes. Só os pixels da faixa entram no sistema linear.
@@ -123,7 +128,7 @@ salvas entre sessões.
    por curvatura), depois mantém só as regiões conexas que contêm cliques de pólipo
    e preenche buracos.
 
-Os passos 4, 5 e 7 vêm ligados por padrão. Também existem, desligados: o relevo
+Os passos 4, 5, 7 e o prior geodésico vêm ligados por padrão. Também existem, desligados: o relevo
 local no mapa de borda (`relief_map`, pseudo-elevação por sombreamento coaxial no
 canal R mais o *Local Relief Model* da arqueologia com LiDAR), um grupo de
 descritores de relevo por Hessiana (`FeatureConfig(relief=True)`) e o balanceamento
@@ -207,7 +212,7 @@ mudaram o Dice em no máximo 0,02, com intervalos de confiança cruzando zero.
 **v1: rodada única com a configuração congelada no desenvolvimento.**
 A estrela ainda podia atravessar a moldura preta.
 
-**v2: versão atual.** Depois da v1, um diagnóstico mostrou que nas bases CVC a estrela
+**v2.** Depois da v1, um diagnóstico mostrou que nas bases CVC a estrela
 do 1º clique ia até a moldura preta (área mediana 2,5 a 8,8 vezes a do pólipo). A
 correção (a estrela não atravessa a moldura) foi conferida só na base de
 desenvolvimento, mas **foi motivada pelo teste, então a v2 não é uma avaliação
@@ -268,6 +273,45 @@ Leitura dos resultados:
 - **Suavização da borda:** no desenvolvimento, σ = 4 px deixa as métricas iguais
   (Dice@3 0,870, NoC@85 4,93); sem o refino por pixel ela ajuda (NoC@85 6,46 → 6,09
   com σ = 8). Fica desligada por padrão.
+
+**v3: versão atual, com o prior geodésico.** Escolhido só nas duas bases de
+desenvolvimento (NoC@85 4,96 → 4,89 no Kvasir e 7,03 → 6,68 no CVC; ver [TODO.md](TODO.md))
+e rodado uma vez no teste. A v2 foi rodada de novo no mesmo ambiente (Python 3.14,
+bibliotecas atuais), por isso difere em até 0,08 da tabela acima.
+
+| Base | Imagens | Versão | Dice@1 | Dice@3 | Dice@5 | Dice@10 | NoC@85 | NoC@90 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Kvasir-SEG (val) | 120 | v2 | 0,679 | 0,849 | 0,894 | 0,922 | 5,91 | 7,61 |
+| | | **v3** | 0,706 | 0,835 | 0,888 | 0,933 | **5,75** | 7,69 |
+| Kvasir (PraNet) | 100 | v2 | 0,673 | 0,844 | 0,878 | 0,924 | 5,27 | 7,11 |
+| | | **v3** | 0,704 | 0,851 | 0,884 | 0,925 | **5,11** | 7,29 |
+| CVC-300 | 60 | v2 | 0,810 | 0,864 | 0,890 | 0,910 | 5,80 | 8,80 |
+| | | **v3** | 0,815 | 0,851 | 0,868 | 0,906 | **5,88** | 8,83 |
+| CVC-ClinicDB | 62 | v2 | 0,535 | 0,731 | 0,824 | 0,882 | 7,02 | 8,29 |
+| | | **v3** | 0,586 | 0,764 | 0,843 | 0,902 | **6,58** | 8,31 |
+| CVC-ColonDB | 380 | v2 | 0,579 | 0,758 | 0,834 | 0,897 | 7,41 | 9,12 |
+| | | **v3** | 0,629 | 0,779 | 0,836 | 0,894 | **7,52** | 9,16 |
+| ETIS-LaribPolypDB | 196 | v2 | 0,584 | 0,778 | 0,841 | 0,886 | 6,15 | 8,33 |
+| | | **v3** | 0,642 | 0,781 | 0,845 | 0,891 | **6,37** | 8,37 |
+
+Diferença pareada v3 − v2 (IC 95% por bootstrap; Wilcoxon com correção de Holm):
+
+| Base | NoC@85 | p | Dice@1 | p |
+| --- | --- | --- | --- | --- |
+| Kvasir-SEG (val) | −0,16 [−0,47; +0,13] | 1 | +0,028 [+0,009; +0,047] | 0,10 |
+| Kvasir (PraNet) | −0,16 [−0,46; +0,14] | 1 | +0,031 [+0,006; +0,062] | 0,40 |
+| CVC-300 | +0,08 [−0,45; +0,63] | 1 | +0,005 [−0,013; +0,024] | 0,70 |
+| CVC-ClinicDB | −0,44 [−0,92; +0,05] | 0,36 | +0,051 [+0,017; +0,091] | 0,01 |
+| CVC-ColonDB | +0,11 [−0,02; +0,24] | 0,99 | +0,050 [+0,036; +0,064] | 5×10⁻¹⁰ |
+| ETIS-LaribPolypDB | +0,22 [+0,01; +0,44] | 0,31 | +0,058 [+0,027; +0,090] | 0,01 |
+
+- **O 1º clique melhora em todas as bases** (Dice@1 +0,005 a +0,058), com
+  significância no CVC-ClinicDB, no CVC-ColonDB e no ETIS.
+- **O NoC@85 não muda de forma significativa em nenhuma base:** cai no Kvasir e no
+  CVC-ClinicDB (−0,16 a −0,44) e sobe no CVC-300, no CVC-ColonDB e no ETIS (+0,08 a
+  +0,22). O ganho de NoC@85 do desenvolvimento não se repetiu, e o NoC@90 fica igual
+  ou um pouco pior. O prior acerta mais o 1º clique, mas atrapalha um pouco as
+  correções finas nas bases com pólipos pequenos.
 
 ## Estrutura
 

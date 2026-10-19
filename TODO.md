@@ -106,7 +106,10 @@ IoU ≥ 0,90 (52% no Kvasir).
       atrapalham as correções. A restrição de estrela geodésica de Gulshan et al. (2010),
       imposta como p(nó) ≤ p(pai) na floresta a partir dos cliques, não muda nada: o vazamento
       passa pelo próprio caminho geodésico. Somar a GMM do 1º clique não acrescenta.
-      Próximo passo: `geodesic_prior=0.2` entra no fatorial e no teste único.
+      Ligado por padrão (`geodesic_prior=0.2`) e rodado uma vez no teste (v3 no README):
+      o Dice@1 sobe nas seis bases (significativo em CVC-ClinicDB, CVC-ColonDB e ETIS),
+      mas o NoC@85 não muda de forma significativa (−0,44 a +0,22). O ganho de NoC do
+      desenvolvimento não generalizou; o de 1º clique sim.
 
 ## Pendentes
 
@@ -117,4 +120,7 @@ IoU ≥ 0,90 (52% no Kvasir).
 - [x] T10 Power watershed ou corte em grafo no lugar do random walker (Couprie et al., 2011)
 - [ ] T11 Prior de convexidade ou descritores de Fourier elípticos (Gorelick et al., 2017; Kuhl e Giardina, 1982)
 - [x] Repetir `scripts/diagnose.py` nas duas bases com o método atual, para separar vazamento de erro de borda
-- [ ] Fatorial e teste único só com o que passar no corte
+- [x] Teste único só com o que passar no corte (v3: prior geodésico; sem fatorial, porque
+      só uma técnica passou)
+- [ ] O critério de corte com 320 imagens deixou passar um ganho de NoC que não se repetiu
+      no teste: exigir IC pareado que não cruze zero nas duas bases antes da próxima rodada

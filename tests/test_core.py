@@ -7,7 +7,7 @@ from skimage.feature import graycomatrix, graycoprops
 from polypseg.features import FeatureConfig, compute_features, feature_group, glcm_features, relief_features
 from polypseg.metrics import dice, iou, number_of_clicks
 from polypseg.preprocessing import inpaint_specular, specular_mask
-from polypseg.segmenter import CLASSIFIERS, InteractiveSegmenter, SegmenterConfig, graph_propagate
+from polypseg.segmenter import CLASSIFIERS, InteractiveSegmenter, SegmenterConfig, graph_cut, graph_propagate
 from polypseg.simulation import next_click, simulate
 from polypseg.superpixels import METHODS, SuperpixelConfig, adjacency, compute_superpixels
 
@@ -110,6 +110,12 @@ def test_graph_propagate_respects_seeds():
     x = graph_propagate(w, np.array([0, 4]), np.array([1.0, 0.0]))
     assert x[0] == 1.0 and x[4] == 0.0
     assert x[1] > 0.5 and x[2] > 0.5 and x[3] < 0.5
+    cut = graph_cut(w, np.array([0, 4]), np.array([1.0, 0.0]))
+    assert cut.tolist() == [1, 1, 1, 0, 0]
+    # Um prior forte o bastante vence a aresta fraca: o nó 3 passa para o pólipo.
+    prior = np.array([0.5, 0.5, 0.5, 1.0, 0.5])
+    cut = graph_cut(w, np.array([0, 4]), np.array([1.0, 0.0]), prior=prior, prior_weight=np.array([0, 0, 0, 2.0, 0]))
+    assert cut.tolist() == [1, 1, 1, 1, 0]
 
 
 @pytest.mark.parametrize("classifier", CLASSIFIERS)
@@ -254,6 +260,7 @@ def test_local_relief_is_positive_on_bright_dome():
 
 @pytest.mark.parametrize("flags", [
     {"boundary_edges": True},
+    {"boundary_edges": True, "radial_prior": True, "graph_solver": "cut"},
     {"radial_prior": True},
     {"pixel_refine": True},
     {"boundary_edges": True, "radial_prior": True, "pixel_refine": True, "relief_map": True},

@@ -32,6 +32,13 @@ Segunda rodada (Python 3.14, bibliotecas atuais; o padrão deu 4,96 e 7,03 em ve
 | T1 Termo de região GMM na DP, em todos os cliques | removida | 4,92 | 7,28 | 0,721 | 0,567 |
 | T1 Termo de região GMM só no 1º clique | `radial_color_model=10` | 4,92 | 7,05 | 0,721 | 0,567 |
 | T1 GMM no 1º clique + separação de cor | `radial_color_model=10, radial_select=True, radial_dark_margin=2` | 4,88 | 7,02 | 0,722 | 0,569 |
+| T10 Corte mínimo s-t no lugar do random walker | `graph_solver="cut"` | 5,09 | 7,08 | 0,662 | 0,542 |
+| T10 Corte mínimo, prior da estrela 0,03 | `graph_solver="cut", radial_weight=0.03` | 5,37 | 7,03 | 0,593 | 0,537 |
+| T10 Corte mínimo, prior da estrela 0,3 | `graph_solver="cut", radial_weight=0.3` | 4,96 | 7,09 | 0,698 | 0,552 |
+| T10 Corte mínimo, prior da estrela 1,0 | `graph_solver="cut", radial_weight=1.0` | 5,11 | 7,17 | 0,705 | 0,546 |
+| T10 Pesos ao quadrado (família do power watershed) | removida | 5,17 | 7,20 | 0,702 | 0,545 |
+| T10 Pesos na 4ª potência | removida | 5,46 | 7,41 | 0,704 | 0,545 |
+| T10 Pesos na 8ª potência | removida | 5,54 | 7,41 | 0,704 | 0,545 |
 
 Observações:
 
@@ -64,8 +71,15 @@ Teto de superpixels (IoU pela maioria do gabarito, n = 200 / 400 / 800): Kvasir 
 IoU ≥ 0,90 (52% no Kvasir).
 
 - Arestas perfeitas ainda tiram 1,7 (Kvasir) e 2,0 (CVC) do NoC@85: o vazamento continua
-  sendo a maior alavanca, mais que a estrela. Prioridade: T10 (corte em grafo ou power
-  watershed, que não espalham probabilidade por arestas fracas) e T2 (geodésica).
+  sendo a maior alavanca, mais que a estrela. O T10 mostrou que a alavanca está nos pesos e
+  não no algoritmo de propagação (ver abaixo).
+- [x] T10: trocar o random walker pelo corte mínimo (mesmo grafo, prior em L1, sementes
+      fixas; max-flow do SciPy) empata no Kvasir e piora o CVC, mesmo ajustando o peso da
+      estrela. Elevar os pesos a uma potência p, que leva o random walker ao power
+      watershed (Couprie et al., 2011), piora sempre; com pesos exponenciais isso equivale a
+      dividir `graph_beta` e `boundary_gamma` por p, que já estavam ajustados. O corte fica
+      desligado (`graph_solver="cut"`); a potência foi removida. O próximo passo é melhorar
+      os pesos das arestas (mapa de borda, descritores), não o resolvedor.
 - Depois de 10 cliques, 74% a 80% do erro está a ≤ 5 px da borda: o NoC@90 é limitado pela
   borda fina, e no CVC também pelos superpixels (teto baixo). T9 (várias tesselações) e o
   refino por pixel atacam isso.
@@ -76,7 +90,7 @@ IoU ≥ 0,90 (52% no Kvasir).
 - [ ] T4 Normalização da iluminação por Retinex multiescala (Jobson et al., 1997)
 - [ ] T6 Reflexos especulares como pista de cúpula (hipótese sem apoio publicado)
 - [ ] T9 Várias tesselações ou hierarquia OWT-UCM (Arbeláez et al., 2011)
-- [ ] T10 Power watershed ou corte em grafo no lugar do random walker (Couprie et al., 2011)
+- [x] T10 Power watershed ou corte em grafo no lugar do random walker (Couprie et al., 2011)
 - [ ] T11 Prior de convexidade ou descritores de Fourier elípticos (Gorelick et al., 2017; Kuhl e Giardina, 1982)
 - [x] Repetir `scripts/diagnose.py` nas duas bases com o método atual, para separar vazamento de erro de borda
 - [ ] Fatorial e teste único só com o que passar no corte

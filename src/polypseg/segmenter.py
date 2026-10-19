@@ -37,6 +37,8 @@ class SegmenterConfig:
     keep_connected: bool = True
     fill_holes: bool = True
     graph_beta: float = 0.5
+    # "walker" (random walker) ou "cut" (corte mínimo s-t com o mesmo grafo e os mesmos priors).
+    graph_solver: str = "walker"
     # Cada grupo de descritores pesa o mesmo na distância do grafo, qualquer que seja o número de colunas.
     balance_groups: bool = False
     # Corta arestas cuja fronteira coincide com o mapa de borda (vale no canal B + gradiente).
@@ -133,6 +135,48 @@ def graph_propagate(
     rhs = -l_us @ seed_val.astype(np.float64) + lam * prior[unseeded]
     x[unseeded] = np.atleast_1d(spsolve(l_uu.tocsc(), rhs))
     return np.clip(x, 0.0, 1.0)
+
+
+def graph_cut(
+    weights: sparse.csr_matrix,
+    seed_idx: np.ndarray,
+    seed_val: np.ndarray,
+    prior: np.ndarray | None = None,
+    prior_weight: float | np.ndarray = 0.0,
+) -> np.ndarray:
+    """Rótulos 0/1 pelo corte mínimo s-t (Boykov e Jolly, 2001), com a energia do random walker em L1.
+
+    Minimiza Σ λᵢ |xᵢ − priorᵢ| + Σ wᵢⱼ [xᵢ ≠ xⱼ] com x binário e as sementes fixas. As
+    capacidades são inteiras de 32 bits, como no max-flow do SciPy: os pesos são escalados para
+    somarem 10⁹, e as sementes ganham capacidade maior que qualquer corte.
+    """
+    from scipy.sparse.csgraph import breadth_first_order, maximum_flow
+
+    n = weights.shape[0]
+    src, snk = n, n + 1
+    if prior is None:
+        prior = np.full(n, 0.5)
+    lam = np.broadcast_to(np.asarray(prior_weight, dtype=np.float64), (n,))
+    to_src = lam * prior  # custo de rotular fundo: cortado se o nó fica do lado do sorvedouro
+    to_snk = lam * (1.0 - prior)
+    scale = 1e9 / max(float(weights.sum() + to_src.sum() + to_snk.sum()), 1e-12)
+    to_src[seed_idx[seed_val == 1]] = 1.1e9 / scale
+    to_snk[seed_idx[seed_val == 0]] = 1.1e9 / scale
+    w = weights.tocoo()
+    nodes = np.arange(n)
+    rows = np.concatenate([w.row, np.full(n, src), nodes])
+    cols = np.concatenate([w.col, nodes, np.full(n, snk)])
+    cap = np.rint(np.concatenate([w.data, to_src, to_snk]) * scale).astype(np.int64)
+    keep = cap > 0
+    graph = sparse.coo_matrix((cap[keep], (rows[keep], cols[keep])), shape=(n + 2, n + 2)).tocsr()
+    flow = maximum_flow(graph, src, snk).flow
+    residual = (graph - flow).tocsr()
+    residual.data = (residual.data > 0).astype(np.int8)
+    residual.eliminate_zeros()
+    reach = breadth_first_order(residual, src, directed=True, return_predecessors=False)
+    x = np.zeros(n)
+    x[reach[reach < n]] = 1.0
+    return x
 
 
 class InteractiveSegmenter:
@@ -354,8 +398,9 @@ class InteractiveSegmenter:
         has_both = (val == 0).any() and (val == 1).any()
         if mode == "graph" or not has_both:
             star = self.star_prior()
+            solve = graph_cut if self.config.graph_solver == "cut" else graph_propagate
             if star is None and self.background is None:
-                return graph_propagate(self.weights, idx, val.astype(float))
+                return solve(self.weights, idx, val.astype(float))
             # Pesos relativos ao grau médio, para valerem o mesmo com ou sem as arestas de borda.
             # Estrela (alvo = estrela) e fundo (alvo = 0) somam-se: λ·p = λ_e·estrela + λ_f·0.
             degree = float(self.weights.sum()) / self.n_superpixels
@@ -366,7 +411,7 @@ class InteractiveSegmenter:
                 lam_bg = degree * self.config.background_prior * self.background / decay
             lam = lam_star + lam_bg
             target = np.zeros(self.n_superpixels) if star is None else lam_star * star / np.maximum(lam, 1e-12)
-            return graph_propagate(self.weights, idx, val.astype(float), prior=target, prior_weight=lam + 1e-12)
+            return solve(self.weights, idx, val.astype(float), prior=target, prior_weight=lam + 1e-12)
         x_train, y_train = self.features[idx], val
         if mode == "rf":
             model = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=0)

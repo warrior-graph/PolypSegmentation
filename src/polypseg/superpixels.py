@@ -15,7 +15,7 @@ METHODS = ("slic", "felzenszwalb", "watershed")
 @dataclass
 class SuperpixelConfig:
     method: str = "slic"
-    n_segments: int = 200
+    n_segments: int = 400
     compactness: float = 10.0
     sigma: float = 1.0
 

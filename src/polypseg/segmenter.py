@@ -13,7 +13,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
 from polypseg.features import FeatureConfig, compute_features
-from polypseg.preprocessing import preprocess
+from polypseg.preprocessing import border_mask, preprocess
 from polypseg.superpixels import SuperpixelConfig, adjacency, compute_superpixels
 
 CLASSIFIERS = ("graph", "hybrid", "svm", "rf")
@@ -102,9 +102,7 @@ class InteractiveSegmenter:
         std = raw.std(axis=0)
         self.features = (raw - mean) / np.where(std > 1e-8, std, 1.0)
         self.weights = self._build_weights()
-        self.border_superpixels = np.unique(
-            np.concatenate([self.labels[0], self.labels[-1], self.labels[:, 0], self.labels[:, -1]])
-        )
+        self.border_superpixels = self._border_superpixels(image)
         self.clicks = []
         self.setup_time = time.perf_counter() - start
 
@@ -113,6 +111,19 @@ class InteractiveSegmenter:
         clicks = list(self.clicks)
         self.set_image(self.image)
         self.clicks = clicks
+
+    def _border_superpixels(self, image: np.ndarray) -> np.ndarray:
+        """Superpixels na borda da imagem ou encostados na moldura preta do endoscópio.
+
+        Em bases como CVC-ClinicDB a borda da imagem é quase toda moldura; sem incluir o
+        tecido junto à moldura, o fundo automático não representa a mucosa.
+        """
+        lab = self.labels
+        edge = np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]])
+        frame = border_mask(image)
+        if frame.any():
+            edge = np.concatenate([edge, lab[ndi.binary_dilation(frame, iterations=3)]])
+        return np.unique(edge)
 
     def _build_weights(self) -> sparse.csr_matrix:
         adj = adjacency(self.labels).tocoo()

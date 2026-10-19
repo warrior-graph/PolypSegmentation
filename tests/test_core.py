@@ -141,3 +141,13 @@ def test_simulation_improves_with_clicks(synthetic):
     curve = simulate(seg, gt, max_clicks=5)
     assert len(curve.dice) == 5
     assert max(curve.dice) > 0.85
+
+
+def test_border_includes_tissue_next_to_black_frame(synthetic):
+    image, _ = synthetic
+    framed = image.copy()
+    framed[:, :20] = 0.0  # moldura preta à esquerda
+    seg = InteractiveSegmenter(SegmenterConfig(superpixels=SuperpixelConfig(n_segments=120)))
+    seg.set_image(framed)
+    assert seg.labels[80, 22] in seg.border_superpixels  # tecido logo depois da moldura
+    assert seg.labels[80, 110] not in seg.border_superpixels  # centro do pólipo

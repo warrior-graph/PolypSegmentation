@@ -64,7 +64,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--limit", type=int, default=0, help="avalia só as N primeiras imagens (0 = todas)")
     p.add_argument("--max-side", type=int, default=512, help="redimensiona o maior lado (0 = original)")
     p.add_argument("--method", choices=METHODS, default="slic")
-    p.add_argument("--n-segments", type=int, default=200)
+    p.add_argument("--n-segments", type=int, default=400)
     p.add_argument("--compactness", type=float, default=10.0)
     p.add_argument("--classifier", choices=CLASSIFIERS, default="graph")
     p.add_argument("--border-background", choices=("always", "auto", "never"), default="always")

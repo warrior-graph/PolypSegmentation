@@ -235,13 +235,19 @@ class InteractiveSegmenter:
         self.lab: np.ndarray | None = None
         self.tissue: np.ndarray | None = None
         self.clicks: list[Click] = []
+        self.roi: np.ndarray | None = None
         self.setup_time = 0.0
 
     # ---------------------------------------------------------------- preparação
-    def set_image(self, image: np.ndarray) -> None:
-        """Calcula superpixels, descritores e grafo. Apaga os cliques anteriores."""
+    def set_image(self, image: np.ndarray, roi: np.ndarray | None = None) -> None:
+        """Calcula superpixels, descritores e grafo. Apaga os cliques anteriores.
+
+        ``roi`` marca onde pode haver pólipo (a caixa do usuário): os superpixels quase todos
+        fora dela entram como fundo, a estrela não sai dela e a máscara é cortada nela.
+        """
         start = time.perf_counter()
         self.image = image
+        self.roi = roi
         work = preprocess(image, self.config.remove_specular)
         self.work = work
         self.labels = compute_superpixels(work, self.config.superpixels)
@@ -261,6 +267,8 @@ class InteractiveSegmenter:
         needs_lab = self.config.radial_select or self.config.radial_color_model > 0
         self.lab = color.rgb2lab(work) if self.config.radial_prior and needs_lab else None
         self.tissue = ~ndi.binary_dilation(border_mask(image), iterations=4) if self.config.radial_prior else None
+        if self.tissue is not None and roi is not None:
+            self.tissue &= roi
         self.weights = self._build_weights()
         self.border_superpixels = self._border_superpixels(image)
         self.background = None
@@ -272,7 +280,7 @@ class InteractiveSegmenter:
     def recompute(self) -> None:
         """Refaz superpixels e descritores com a configuração atual, mantendo os cliques."""
         clicks = list(self.clicks)
-        self.set_image(self.image)
+        self.set_image(self.image, self.roi)
         self.clicks = clicks
 
     def _border_superpixels(self, image: np.ndarray) -> np.ndarray:
@@ -286,6 +294,10 @@ class InteractiveSegmenter:
         frame = border_mask(image)
         if frame.any():
             edge = np.concatenate([edge, lab[ndi.binary_dilation(frame, iterations=3)]])
+        if self.roi is not None:
+            n = self.n_superpixels
+            inside = np.bincount(lab.ravel(), weights=self.roi.ravel(), minlength=n) / np.bincount(lab.ravel(), minlength=n)
+            edge = np.concatenate([edge, np.flatnonzero(inside < 0.5)])
         return np.unique(edge)
 
     def _star_region(self, center: tuple[int, int], others: tuple) -> np.ndarray:
@@ -431,6 +443,8 @@ class InteractiveSegmenter:
         if self.config.smooth_sigma > 0:
             clicks = [(c.row, c.col, c.positive) for c in self.clicks]
             mask = smooth_mask(mask, self.config.smooth_sigma, clicks)
+        if self.roi is not None:
+            mask &= self.roi
         mask = self._postprocess(mask)
         return SegmentationResult(mask, prob, time.perf_counter() - start)
 

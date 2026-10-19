@@ -67,6 +67,8 @@ polypseg-gui data/Kvasir-SEG          # pasta com images/ e masks/
 | --- | --- |
 | Marcar pólipo | botão esquerdo |
 | Marcar fundo | botão direito |
+| Caixa em volta de um pólipo | Ctrl + arrastar com o botão esquerdo |
+| Remover caixa | Ctrl + botão direito sobre ela |
 | Zoom / arrastar | roda do mouse / botão do meio |
 | Desfazer / limpar | Ctrl+Z / Esc |
 | Imagem anterior / próxima | PgUp / PgDn |
@@ -76,6 +78,16 @@ Ao abrir uma pasta no formato do Kvasir-SEG (`images/` e `masks/`), o gabarito �
 carregado sozinho e o painel mostra o Dice e o IoU a cada clique. Ao salvar, além
 do PNG da máscara é gravado um `.json` com os cliques, a configuração e o
 **tempo de anotação**, útil para medir custo de anotação no artigo.
+
+**Caixas (opcional).** Com uma ou mais caixas desenhadas, cada caixa é segmentada à
+parte ([boxes.py](src/polypseg/boxes.py)): superpixels, descritores e grafo são
+calculados só num recorte com 15% de folga em volta da caixa, com o orçamento inteiro
+de superpixels; a folga entra como fundo, a estrela não sai da caixa e a máscara é
+cortada nela. A máscara final é a união das caixas. Cliques fora de todas as caixas são
+ignorados (ali já é fundo). Onde duas caixas se cruzam, um clique de fundo vale para as
+duas e um clique de pólipo vai só para a caixa de centro mais próximo, medido em
+unidades do tamanho de cada caixa. Sem caixas, a imagem inteira é usada, como antes.
+Ainda não há avaliação com caixas.
 
 No painel dá para trocar o algoritmo de superpixels (SLIC, Felzenszwalb,
 watershed), a quantidade (10 a 20000) e a compacidade, os grupos de descritores, o
@@ -322,6 +334,7 @@ src/polypseg/
   features.py        cor, LBP, GLCM restrita, Gabor, relevo (vetorizado com bincount)
   boundary.py        mapa de borda e força de borda entre superpixels vizinhos
   radial.py          contorno em estrela por transformada polar e DP circular
+  boxes.py           segmentação por caixas, uma por pólipo, cada uma independente
   refine.py          random walker por pixel na faixa da borda e suavização
   relief.py          pseudo-elevação coaxial e Local Relief Model
   segmenter.py       segmentador interativo (grafo, híbrido, SVM, RF)

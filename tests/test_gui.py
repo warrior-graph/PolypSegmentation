@@ -69,3 +69,58 @@ def test_window_folder_click_and_dice(app, synthetic, tmp_path):
     window.clear()
     assert window.mask is None
     window.close()
+
+
+def test_window_boxes(app, synthetic, tmp_path):
+    from polypseg.boxes import BoxSegmenter
+
+    image, gt = synthetic
+    io.imsave(tmp_path / "a.png", (image * 255).astype(np.uint8), check_contrast=False)
+    window = MainWindow()
+    window.load_image(tmp_path / "a.png")
+    wait_ready(app, window)
+    window.view.clicked.emit(80, 110, True)
+
+    window.view.box_drawn.emit(40, 70, 120, 150)  # caixa em volta do pólipo
+    wait_ready(app, window)
+    assert isinstance(window.segmenter, BoxSegmenter)
+    assert len(window.segmenter.clicks) == 1  # o clique dentro da caixa foi mantido
+    window.view.clicked.emit(5, 5, False)  # fora da caixa: ignorado
+    app.processEvents()
+    assert len(window.segmenter.clicks) == 1
+    assert window.mask is not None and not window.mask[:30].any()
+
+    window.view.box_removed.emit(80, 110)
+    wait_ready(app, window)
+    assert not isinstance(window.segmenter, BoxSegmenter)
+    window.close()
+
+
+def test_view_ctrl_drag_draws_box(app):
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtTest import QTest
+
+    from polypseg.gui.view import ImageView
+
+    view = ImageView()
+    view.resize(300, 300)
+    view.show()
+    view.set_image(np.zeros((100, 120, 3), np.uint8))
+    app.processEvents()
+    boxes, removed, clicks = [], [], []
+    view.box_drawn.connect(lambda *b: boxes.append(b))
+    view.box_removed.connect(lambda *p: removed.append(p))
+    view.clicked.connect(lambda *c: clicks.append(c))
+    port = view.viewport()
+    ctrl = Qt.KeyboardModifier.ControlModifier
+    a, b = view.mapFromScene(QPointF(20, 10)), view.mapFromScene(QPointF(80, 60))
+    QTest.mousePress(port, Qt.MouseButton.LeftButton, ctrl, a)
+    QTest.mouseMove(port, b)
+    QTest.mouseRelease(port, Qt.MouseButton.LeftButton, ctrl, b)
+    QTest.mouseClick(port, Qt.MouseButton.RightButton, ctrl, b)
+    QTest.mouseClick(port, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, b)
+    assert len(boxes) == 1
+    r0, c0, r1, c1 = boxes[0]
+    assert abs(r0 - 10) <= 2 and abs(c0 - 20) <= 2 and abs(r1 - 60) <= 2 and abs(c1 - 80) <= 2
+    assert len(removed) == 1 and len(clicks) == 1 and clicks[0][2] is True
+    view.close()

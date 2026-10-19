@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 from scipy import ndimage as ndi
 from skimage import io
 
+from polypseg.boxes import BoxSegmenter
 from polypseg.features import FeatureConfig
 from polypseg.gui.view import ImageView
 from polypseg.metrics import dice, iou
@@ -104,16 +105,24 @@ class _SetupJob(QRunnable):
     então trocar de imagem rapidamente não mistura estados.
     """
 
-    def __init__(self, config: SegmenterConfig, image: np.ndarray, clicks: list, token: int):
+    def __init__(self, config: SegmenterConfig, image: np.ndarray, clicks: list, token: int, boxes: list = ()):
         super().__init__()
         self.config, self.image, self.clicks, self.token = config, image, clicks, token
+        self.boxes = list(boxes)
         self.signals = _Signals()
 
     def run(self):
         try:
-            segmenter = InteractiveSegmenter(self.config)
-            segmenter.set_image(self.image)
-            segmenter.clicks = list(self.clicks)
+            if self.boxes:
+                # Com caixas, cada uma é segmentada à parte; cliques fora delas são descartados.
+                segmenter = BoxSegmenter(self.config)
+                segmenter.set_image(self.image, self.boxes)
+                for c in self.clicks:
+                    segmenter.add_click(c.row, c.col, c.positive)
+            else:
+                segmenter = InteractiveSegmenter(self.config)
+                segmenter.set_image(self.image)
+                segmenter.clicks = list(self.clicks)
             self.signals.done.emit(self.token, segmenter)
         except Exception:  # noqa: BLE001 - erro vai para a interface
             self.signals.failed.emit(self.token, traceback.format_exc())
@@ -130,6 +139,7 @@ class MainWindow(QMainWindow):
         self.image_path: Path | None = None
         self.gt: np.ndarray | None = None
         self.mask: np.ndarray | None = None
+        self.boxes: list[tuple[int, int, int, int]] = []
         self.files: list[Path] = []
         self.ready = False
         self._token = 0
@@ -144,6 +154,8 @@ class MainWindow(QMainWindow):
 
         self.view = ImageView(self)
         self.view.clicked.connect(self.on_click)
+        self.view.box_drawn.connect(self.add_box)
+        self.view.box_removed.connect(self.remove_box)
         self.setCentralWidget(self.view)
         self._build_actions()
         self._build_panel()
@@ -309,7 +321,8 @@ class MainWindow(QMainWindow):
         help_label = QLabel(
             "<b>Botão esquerdo</b>: pólipo · <b>direito</b>: fundo<br>"
             "<b>Roda</b>: zoom · <b>botão do meio</b>: arrastar<br>"
-            "<b>Ctrl+Z</b>: desfazer · <b>Esc</b>: limpar · <b>PgUp/PgDn</b>: navegar"
+            "<b>Ctrl+Z</b>: desfazer · <b>Esc</b>: limpar · <b>PgUp/PgDn</b>: navegar<br>"
+            "<b>Ctrl+arrastar</b>: caixa em volta de um pólipo · <b>Ctrl+direito</b>: remove a caixa"
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
@@ -396,6 +409,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erro ao abrir", str(exc))
             return
         self.image, self.image_path, self.mask = image, path, None
+        self.boxes = []
         gt_path = self.find_gt(path)
         self.gt = load_mask(str(gt_path)) if gt_path else None
         if self.gt is not None and self.gt.shape != image.shape[:2]:
@@ -442,6 +456,7 @@ class MainWindow(QMainWindow):
             "border_background": cfg.border_background,
             "modules": {key: getattr(cfg, key) for key in MODULE_LABELS},
             "smooth_sigma": cfg.smooth_sigma,
+            "boxes": self.boxes,
             "geodesic_max_clicks": cfg.geodesic_max_clicks,
         }
         if self.gt is not None:
@@ -458,8 +473,9 @@ class MainWindow(QMainWindow):
         clicks = list(self.segmenter.clicks) if keep_clicks else []
         self.view.set_overlay(None)
         self.view.set_markers([])
+        self.view.set_boxes(self.boxes)
         self.statusBar().showMessage("Calculando superpixels e descritores…")
-        job = _SetupJob(self.current_config(), self.image, clicks, self._token)
+        job = _SetupJob(self.current_config(), self.image, clicks, self._token, self.boxes)
         job.signals.done.connect(self._on_setup_done)
         job.signals.failed.connect(self._on_setup_failed)
         self.pool.start(job)
@@ -504,8 +520,27 @@ class MainWindow(QMainWindow):
     def on_click(self, row: int, col: int, positive: bool):
         if not self.ready:
             return
-        self.segmenter.add_click(row, col, positive)
+        if self.segmenter.add_click(row, col, positive) == []:  # BoxSegmenter: fora das caixas
+            self.statusBar().showMessage("Clique fora das caixas: ignorado (fora delas já é fundo).")
+            return
         self.run_prediction()
+
+    @Slot(int, int, int, int)
+    def add_box(self, r0: int, c0: int, r1: int, c1: int):
+        if self.image is None:
+            return
+        self.boxes.append((r0, c0, r1, c1))
+        self._start_setup(keep_clicks=True)
+
+    @Slot(int, int)
+    def remove_box(self, row: int, col: int):
+        """Remove a caixa mais recente que contém o ponto; sem caixas, volta à imagem inteira."""
+        for i in range(len(self.boxes) - 1, -1, -1):
+            r0, c0, r1, c1 = self.boxes[i]
+            if r0 <= row < r1 and c0 <= col < c1:
+                del self.boxes[i]
+                self._start_setup(keep_clicks=True)
+                return
 
     def undo(self):
         if self.ready:
@@ -561,7 +596,8 @@ class MainWindow(QMainWindow):
         n_neg = len(self.segmenter.clicks) - n_pos
         lines = [
             f"Cliques: {n_pos} pólipo, {n_neg} fundo",
-            f"Superpixels: {self.segmenter.n_superpixels}",
+            f"Superpixels: {self.segmenter.n_superpixels}"
+            + (f" em {len(self.boxes)} caixa(s)" if self.boxes else ""),
             f"Preparação: {self.segmenter.setup_time:.2f}s · predição: {self._last_predict * 1000:.0f} ms",
         ]
         if self.mask is not None:

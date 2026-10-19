@@ -374,3 +374,42 @@ def test_color_model_star_on_first_click():
     seg.set_image(image)
     seg.add_click(64, 64, True)
     assert dice(seg.predict().mask, gt) > 0.85
+
+
+def _two_polyps():
+    left, gl = _dark_rim_disc(size=96, radius=22)
+    right, gr = _dark_rim_disc(size=96, radius=22)
+    return np.concatenate([left, right], axis=1), np.concatenate([gl, gr], axis=1)
+
+
+def test_box_segmenter_segments_each_box_and_ignores_outside():
+    from polypseg.boxes import BoxSegmenter, boxes_from_mask
+
+    image, gt = _two_polyps()
+    boxes = boxes_from_mask(gt)
+    assert len(boxes) == 2
+    seg = BoxSegmenter(SegmenterConfig(superpixels=SuperpixelConfig(n_segments=120)))
+    seg.set_image(image, boxes)
+    assert seg.add_click(48, 48, True) == [0]
+    assert seg.add_click(48, 144, True) == [1]
+    assert seg.add_click(2, 2, False) == []  # fora das caixas: já é fundo
+    mask = seg.predict().mask
+    assert dice(mask, gt) > 0.85
+    outside = np.ones_like(gt)
+    for r0, c0, r1, c1 in boxes:
+        outside[r0:r1, c0:c1] = False
+    assert not mask[outside].any()
+    seg.undo()
+    assert len(seg.regions[1].segmenter.clicks) == 0
+
+
+def test_box_click_routing_on_overlap():
+    from polypseg.boxes import BoxSegmenter
+
+    image, _ = _two_polyps()
+    seg = BoxSegmenter(SegmenterConfig(superpixels=SuperpixelConfig(n_segments=60)))
+    seg.set_image(image, [(20, 20, 76, 110), (20, 86, 76, 170)])  # cruzam nas colunas 86–110
+    # Centros nas colunas 65 (largura 90) e 128 (largura 84).
+    assert seg.add_click(48, 92, True) == [0]  # 27/90 = 0,30 contra 36/84 = 0,43
+    assert seg.add_click(48, 104, True) == [1]  # 39/90 = 0,43 contra 24/84 = 0,29
+    assert seg.add_click(48, 98, False) == [0, 1]  # fundo vale para as duas

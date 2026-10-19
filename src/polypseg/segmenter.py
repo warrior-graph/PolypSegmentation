@@ -47,6 +47,9 @@ class SegmenterConfig:
     # distâncias geodésicas aos cliques de pólipo e às sementes de fundo, peso relativo ao grau e
     # dividido pelo nº de cliques, como o da estrela.
     geodesic_prior: float = 0.2
+    # Desliga o prior geodésico depois deste nº de cliques (0 = nunca desliga): no teste ele
+    # acertou mais o 1º clique, mas atrapalhou as correções finas.
+    geodesic_max_clicks: int = 0
     # Cada grupo de descritores pesa o mesmo na distância do grafo, qualquer que seja o número de colunas.
     balance_groups: bool = False
     # Corta arestas cuja fronteira coincide com o mapa de borda (vale no canal B + gradiente).
@@ -436,7 +439,9 @@ class InteractiveSegmenter:
         has_both = (val == 0).any() and (val == 1).any()
         if mode == "graph" or not has_both:
             star = self.star_prior()
-            geo = self._geodesic_prior(idx, val) if self.config.geodesic_prior > 0 else None
+            limit = self.config.geodesic_max_clicks
+            geo_on = self.config.geodesic_prior > 0 and (limit <= 0 or len(self.clicks) <= limit)
+            geo = self._geodesic_prior(idx, val) if geo_on else None
             solve = graph_cut if self.config.graph_solver == "cut" else graph_propagate
             if star is None and self.background is None and geo is None:
                 return solve(self.weights, idx, val.astype(float))

@@ -77,6 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="boundary_edges,radial_prior,pixel_refine,geodesic_prior",
         help=f"módulos ligados, separados por vírgula ({', '.join(MODULES)}); 'none' desliga todos",
     )
+    p.add_argument("--geodesic-max-clicks", type=int, default=0, help="desliga o prior geodésico depois de N cliques (0 = nunca)")
     p.add_argument("--smooth", type=float, default=0.0, help="σ em px da suavização final da borda (0 desliga)")
     p.add_argument("--jobs", type=int, default=1, help="processos em paralelo")
     p.add_argument("--out", type=Path, help="CSV com Dice e IoU por imagem e clique")
@@ -101,6 +102,7 @@ def main(argv: list[str] | None = None) -> None:
         **{m: m in modules for m in MODULES if m != "geodesic_prior"},
         geodesic_prior=SegmenterConfig.geodesic_prior if "geodesic_prior" in modules else 0.0,
         smooth_sigma=args.smooth,
+        geodesic_max_clicks=args.geodesic_max_clicks,
     )
     pairs = find_pairs(args.data)
     if args.list:

@@ -354,6 +354,20 @@ def test_region_term_pulls_star_to_the_color_model():
     assert dice(star_mask(gt.shape, (64, 64), angles, radii), gt) > 0.9
 
 
+def test_geodesic_prior_turns_off_after_max_clicks(synthetic):
+    image, _ = synthetic
+    seg = InteractiveSegmenter(SegmenterConfig(superpixels=SuperpixelConfig(n_segments=80), geodesic_max_clicks=1))
+    seg.set_image(image)
+    calls = []
+    original = seg._geodesic_prior
+    seg._geodesic_prior = lambda idx, val: calls.append(len(seg.clicks)) or original(idx, val)
+    seg.add_click(80, 110, True)
+    seg.predict()
+    seg.add_click(10, 10, False)
+    seg.predict()
+    assert calls == [1]
+
+
 def test_color_model_star_on_first_click():
     image, gt = _dark_rim_disc(size=128, radius=30)
     seg = InteractiveSegmenter(SegmenterConfig(superpixels=SuperpixelConfig(n_segments=120), radial_color_model=10.0))

@@ -51,6 +51,9 @@ Segunda rodada (Python 3.14, bibliotecas atuais; o padrão deu 4,96 e 7,03 em ve
 | T2 Prior geodésico ÷ nº de cliques, 0,6 | `geodesic_prior=0.6` | 5,54 | 6,99 | 0,699 | 0,593 |
 | T2 Prior geodésico ÷ nº de cliques, 1,0 | `geodesic_prior=1.0` | 5,78 | 7,11 | 0,682 | 0,578 |
 | T2 0,3 + GMM no 1º clique | `geodesic_prior=0.3, radial_color_model=10` | 4,95 | 6,89 | 0,734 | 0,598 |
+| T2 0,2, desligado depois do 1º clique | `geodesic_max_clicks=1` | 4,95 | 7,00 | 0,725 | 0,587 |
+| T2 0,2, desligado depois do 2º clique | `geodesic_max_clicks=2` | 4,91 | 7,03 | 0,725 | 0,587 |
+| T2 0,2, desligado depois do 3º clique | `geodesic_max_clicks=3` | 4,84 | 6,93 | 0,725 | 0,587 |
 
 Observações:
 
@@ -110,6 +113,8 @@ IoU ≥ 0,90 (52% no Kvasir).
       o Dice@1 sobe nas seis bases (significativo em CVC-ClinicDB, CVC-ColonDB e ETIS),
       mas o NoC@85 não muda de forma significativa (−0,44 a +0,22). O ganho de NoC do
       desenvolvimento não generalizou; o de 1º clique sim.
+      Desligar o prior depois de N cliques (`geodesic_max_clicks`) perde o ganho do CVC no
+      desenvolvimento (NoC@85 6,93 a 7,03 contra 6,68), então o padrão continua sem limite.
 
 ## Pendentes
 

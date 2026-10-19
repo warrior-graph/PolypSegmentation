@@ -251,6 +251,13 @@ class MainWindow(QMainWindow):
         self.smooth_spin.setToolTip("σ da suavização final da borda; arredonda degraus e reentrâncias menores que σ")
         self.smooth_spin.valueChanged.connect(self._on_model_changed)
         smooth_form.addRow("Suavização da borda", self.smooth_spin)
+        self.geo_clicks_spin = QSpinBox()
+        self.geo_clicks_spin.setRange(0, 50)
+        self.geo_clicks_spin.setSpecialValueText("sempre")
+        self.geo_clicks_spin.setValue(defaults.geodesic_max_clicks)
+        self.geo_clicks_spin.setToolTip("Nº de cliques até o qual o prior geodésico vale; depois ele é desligado")
+        self.geo_clicks_spin.valueChanged.connect(self._on_model_changed)
+        smooth_form.addRow("Prior geodésico até o clique", self.geo_clicks_spin)
         mod_layout.addLayout(smooth_form)
         layout.addWidget(mod_box)
 
@@ -334,6 +341,7 @@ class MainWindow(QMainWindow):
             classifier=self.clf_combo.currentData(),
             border_background=self.border_combo.currentData(),
             smooth_sigma=self.smooth_spin.value(),
+            geodesic_max_clicks=self.geo_clicks_spin.value(),
             **modules,
         )
 
@@ -434,6 +442,7 @@ class MainWindow(QMainWindow):
             "border_background": cfg.border_background,
             "modules": {key: getattr(cfg, key) for key in MODULE_LABELS},
             "smooth_sigma": cfg.smooth_sigma,
+            "geodesic_max_clicks": cfg.geodesic_max_clicks,
         }
         if self.gt is not None:
             meta.update(dice=dice(self.mask, self.gt), iou=iou(self.mask, self.gt))
@@ -487,6 +496,7 @@ class MainWindow(QMainWindow):
         self.segmenter.config.classifier = cfg.classifier
         self.segmenter.config.border_background = cfg.border_background
         self.segmenter.config.smooth_sigma = cfg.smooth_sigma
+        self.segmenter.config.geodesic_max_clicks = cfg.geodesic_max_clicks
         if self.ready:
             self.run_prediction()
 

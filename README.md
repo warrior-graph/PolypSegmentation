@@ -361,7 +361,49 @@ memória, use `batch=4` ou `yolo11n-seg.pt`. O `project` é absoluto porque o ul
 prefixa caminhos relativos com o `runs_dir` global (`yolo settings`). O `eval` relata Dice e IoU médios por base
 (uma imagem sem detecção conta como Dice 0) e quantas imagens ficaram sem detecção.
 
-Resultados: pendentes.
+### Resultados
+
+Treino: YOLO11s-seg pré-treinado no COCO, 100 épocas, 640 px, batch 8, 1,46 h numa RTX
+A400 (4 GB, 2,4 GB usados). Na validação (145 imagens do treino), mAP50 de máscara 0,985
+e mAP50-95 0,815. Curvas: [docs/yolo/curvas.png](docs/yolo/curvas.png); predições na
+validação: [docs/yolo/val_pred.jpg](docs/yolo/val_pred.jpg). Os pesos estão em
+`models/yolo11s-seg-polyp.pt`, então dá para avaliar sem treinar:
+
+```bash
+polypseg-auto eval --weights models/yolo11s-seg-polyp.pt --data data/TestDataset/* --out results/yolo_test.csv
+```
+
+Teste, rodada única, `conf=0.25`, máscara na resolução original (por imagem em
+[docs/yolo/teste.csv](docs/yolo/teste.csv)):
+
+| Base | Imagens | mDice | mIoU | Sem detecção | mDice nas detectadas | PraNet (mDice) |
+| --- | --- | --- | --- | --- | --- | --- |
+| Kvasir | 100 | 0,885 | 0,831 | 0 | 0,885 | 0,898 |
+| CVC-ClinicDB | 62 | 0,927 | 0,880 | 1 | 0,942 | 0,899 |
+| CVC-ColonDB | 380 | 0,706 | 0,644 | 56 (15%) | 0,828 | 0,709 |
+| CVC-300 | 60 | 0,814 | 0,750 | 2 | 0,842 | 0,871 |
+| ETIS-LaribPolypDB | 196 | 0,590 | 0,533 | 55 (28%) | 0,820 | 0,628 |
+
+A coluna do PraNet é a publicada (Fan et al., 2020), com o mesmo treino e o mesmo teste.
+É só uma referência: o PraNet calcula o Dice sobre o mapa de probabilidade, não sobre uma
+máscara binária com limiar fixo.
+
+- **Sem nenhum clique, o YOLO-seg fica perto do PraNet:** acima no CVC-ClinicDB,
+  praticamente igual no CVC-ColonDB e abaixo nas outras três bases (−0,013 a −0,057).
+- **O erro vem quase todo das imagens sem detecção.** Nas imagens detectadas, o Dice vai de
+  0,82 a 0,94 em todas as bases; no CVC-ColonDB e no ETIS, 15% e 28% das imagens não têm
+  nenhuma detecção acima de 0,25 e contam como Dice 0. São pólipos pequenos e de outro
+  domínio (as duas bases não entram no treino).
+- **Comparação com a fase assistida (v3, imagens a 512 px):** o automático equivale a
+  5 cliques no Kvasir (0,885 contra Dice@5 0,884) e passa os 10 cliques no CVC-ClinicDB
+  (0,927 contra 0,902). No CVC-ColonDB fica entre 1 e 3 cliques, no CVC-300 empata com 1
+  clique (0,814 contra 0,815) e no ETIS fica abaixo de 1 clique (0,590 contra 0,642),
+  por causa das imagens sem detecção.
+
+Próximos passos da fase automática: escolher o `conf` na validação, e não no teste (um
+limiar menor deve recuperar parte das imagens sem detecção); usar as caixas do YOLO como
+entrada do pipeline clássico (`BoxSegmenter`), com um clique sintético no centro, para
+comparar os dois na mesma tabela.
 
 ## Estrutura
 

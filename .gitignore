@@ -9,3 +9,5 @@ data/
 results/
 *.csv
 *.pt
+!models/*.pt
+!docs/yolo/*.csv

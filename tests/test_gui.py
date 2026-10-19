@@ -34,6 +34,11 @@ def test_render_overlay_layers():
     out = render_overlay(labels, mask, mask, show_gt=True)
     assert out.shape == (10, 10, 4) and out.dtype == np.uint8
     assert out[..., 3].max() == 255
+    custom = render_overlay(labels, mask, None, show_boundaries=False, colors={"mask": (10, 20, 30)})
+    assert tuple(custom[4, 4, :3]) == (10, 20, 30)
+    thin = render_overlay(labels, None, None, show_mask=False)
+    thick = render_overlay(labels, None, None, show_mask=False, boundary_width=3)
+    assert (thick[..., 3] > 0).sum() > (thin[..., 3] > 0).sum()
 
 
 def test_window_folder_click_and_dice(app, synthetic, tmp_path):
@@ -53,6 +58,11 @@ def test_window_folder_click_and_dice(app, synthetic, tmp_path):
     app.processEvents()
     assert window.mask is not None
     assert "Dice" in window.info_label.text()
+
+    window.overlay_colors["boundaries"] = (0, 0, 255)
+    window.refresh_overlay()
+    window._update_color_buttons()
+    assert "rgb(0, 0, 255)" in window.color_buttons["boundaries"].styleSheet()
 
     window.undo()
     assert len(window.segmenter.clicks) == 1

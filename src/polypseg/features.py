@@ -9,9 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy import ndimage as ndi
 from scipy.signal import fftconvolve
 from skimage import color
-from skimage.feature import local_binary_pattern
+from skimage.feature import hessian_matrix, local_binary_pattern
 from skimage.filters import gabor_kernel
 
 
@@ -21,10 +22,22 @@ class FeatureConfig:
     lbp: bool = True
     glcm: bool = True
     gabor: bool = True
+    relief: bool = False
     lbp_radii: tuple[int, ...] = (1, 2)
     glcm_levels: int = 16
     gabor_frequencies: tuple[float, ...] = (0.1, 0.25)
     gabor_orientations: int = 4
+    relief_scales: tuple[float, ...] = (2.0, 4.0, 8.0, 16.0)
+    relief_surround: float = 4.0
+
+
+TEXTURE_GROUPS = ("lbp", "glcm", "gabor", "relief")
+
+
+def feature_group(name: str) -> str:
+    """Grupo de um descritor pelo prefixo do nome; o que não é textura nem relevo é cor."""
+    prefix = name.split("_", 1)[0]
+    return prefix if prefix in TEXTURE_GROUPS else "color"
 
 
 def _mean_std(values: np.ndarray, labels: np.ndarray, counts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -145,6 +158,45 @@ def gabor_features(
     return np.stack(cols, axis=1), names
 
 
+def relief_features(
+    gray: np.ndarray,
+    labels: np.ndarray,
+    counts: np.ndarray,
+    scales: tuple[float, ...],
+    surround: float,
+) -> tuple[np.ndarray, list[str]]:
+    """Relevo aproximado pela luminância, já que a luz do endoscópio sai junto da câmera.
+
+    Por escala σ, com a Hessiana normalizada por σ² e autovalores λ1 ≥ λ2:
+    - shape index (2/π)·atan2(λ1 + λ2, λ1 − λ2): −1 é cúpula clara, +1 é bacia escura;
+    - curvedness √((λ1² + λ2²)/2): quanto de curvatura há;
+    - cúpula max(−λ1, 0): positiva só quando os dois autovalores são negativos (blob claro);
+    - centro-entorno log(G_σ ∗ I / G_kσ ∗ I): brilho local relativo à vizinhança.
+    """
+    g = gray.astype(np.float64)
+    cols, names = [], []
+    for sigma in scales:
+        hrr, hrc, hcc = hessian_matrix(g, sigma=sigma, mode="reflect", order="rc", use_gaussian_derivatives=False)
+        half_tr = (hrr + hcc) / 2
+        root = np.sqrt(((hrr - hcc) / 2) ** 2 + hrc**2)
+        l1 = (half_tr + root) * sigma**2
+        l2 = (half_tr - root) * sigma**2
+        shape = (2 / np.pi) * np.arctan2(l1 + l2, l1 - l2)
+        curvedness = np.sqrt((l1**2 + l2**2) / 2)
+        dome = np.maximum(-l1, 0.0)
+        s_mean, s_std = _mean_std(shape, labels, counts)
+        c_mean, _ = _mean_std(curvedness, labels, counts)
+        d_mean, _ = _mean_std(dome, labels, counts)
+        cols += [s_mean, s_std, c_mean, d_mean]
+        names += [f"relief_s{sigma:g}_{k}" for k in ("shape_mean", "shape_std", "curvedness", "dome")]
+        center = ndi.gaussian_filter(g, sigma, mode="reflect")
+        around = ndi.gaussian_filter(g, sigma * surround, mode="reflect")
+        cs_mean, _ = _mean_std(np.log((center + 1e-3) / (around + 1e-3)), labels, counts)
+        cols.append(cs_mean)
+        names.append(f"relief_s{sigma:g}_center_surround")
+    return np.stack(cols, axis=1), names
+
+
 def compute_features(image: np.ndarray, labels: np.ndarray, config: FeatureConfig | None = None) -> tuple[np.ndarray, list[str]]:
     """Matriz (K, D) de descritores e a lista de nomes das D colunas."""
     config = config or FeatureConfig()
@@ -166,6 +218,10 @@ def compute_features(image: np.ndarray, labels: np.ndarray, config: FeatureConfi
         names += nm
     if config.gabor:
         f, nm = gabor_features(gray, labels, counts, config.gabor_frequencies, config.gabor_orientations)
+        blocks.append(f)
+        names += nm
+    if config.relief:
+        f, nm = relief_features(gray, labels, counts, config.relief_scales, config.relief_surround)
         blocks.append(f)
         names += nm
     if not blocks:

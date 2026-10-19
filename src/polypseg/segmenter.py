@@ -9,11 +9,16 @@ import numpy as np
 from scipy import ndimage as ndi
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
+from skimage import color
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
-from polypseg.features import FeatureConfig, compute_features
+from polypseg.boundary import boundary_map, pair_strength
+from polypseg.features import FeatureConfig, compute_features, feature_group
 from polypseg.preprocessing import border_mask, preprocess
+from polypseg.radial import soft_prior, star_contour, star_mask
+from polypseg.refine import refine_band, smooth_mask
+from polypseg.relief import relief_edges
 from polypseg.superpixels import SuperpixelConfig, adjacency, compute_superpixels
 
 CLASSIFIERS = ("graph", "hybrid", "svm", "rf")
@@ -31,6 +36,34 @@ class SegmenterConfig:
     keep_connected: bool = True
     fill_holes: bool = True
     graph_beta: float = 0.5
+    # Cada grupo de descritores pesa o mesmo na distância do grafo, qualquer que seja o número de colunas.
+    balance_groups: bool = False
+    # Corta arestas cuja fronteira coincide com o mapa de borda (vale no canal B + gradiente).
+    boundary_edges: bool = True
+    boundary_gamma: float = 0.5
+    boundary_valley_weight: float = 0.25
+    # Soma ao mapa de borda a descontinuidade do relevo local (sombreamento coaxial + LRM).
+    relief_map: bool = False
+    # Prior em estrela: contorno radial de maior borda em volta de cada clique de pólipo.
+    radial_prior: bool = True
+    radial_weight: float = 0.1
+    radial_tau: float = 5.0
+    radial_max_step: int = 3
+    radial_outward: float = 0.8
+    radial_balloon: float = 0.1
+    # Só a estrela do 1º clique de pólipo; os seguintes costumam cair perto da borda.
+    radial_first_only: bool = True
+    # Os demais cliques viram restrições do contorno da estrela (por fora dos de pólipo,
+    # por dentro dos de fundo).
+    radial_constrained: bool = True
+    # Peso do prior dividido por (nº de cliques)^decay, para os cliques corrigirem a estrela.
+    radial_decay: float = 1.0
+    # Random walker por pixel na faixa de ±refine_band px em volta da borda da máscara.
+    pixel_refine: bool = True
+    refine_band: int = 14
+    refine_beta: float = 4.0
+    # Suavização final da borda (σ em pixels; 0 desliga), já que os pólipos são arredondados.
+    smooth_sigma: float = 0.0
     graph_prior_weight: float = 0.05
     threshold: float = 0.5
 
@@ -82,11 +115,16 @@ class InteractiveSegmenter:
     def __init__(self, config: SegmenterConfig | None = None):
         self.config = config or SegmenterConfig()
         self.image: np.ndarray | None = None
+        self.work: np.ndarray | None = None
         self.labels: np.ndarray | None = None
         self.features: np.ndarray | None = None
         self.feature_names: list[str] = []
         self.weights: sparse.csr_matrix | None = None
         self.border_superpixels: np.ndarray = np.empty(0, dtype=int)
+        self.boundary: np.ndarray | None = None
+        self._star_cache: dict[tuple, np.ndarray] = {}
+        self.luminance: np.ndarray | None = None
+        self.tissue: np.ndarray | None = None
         self.clicks: list[Click] = []
         self.setup_time = 0.0
 
@@ -96,11 +134,19 @@ class InteractiveSegmenter:
         start = time.perf_counter()
         self.image = image
         work = preprocess(image, self.config.remove_specular)
+        self.work = work
         self.labels = compute_superpixels(work, self.config.superpixels)
         raw, self.feature_names = compute_features(work, self.labels, self.config.features)
         mean = raw.mean(axis=0)
         std = raw.std(axis=0)
         self.features = (raw - mean) / np.where(std > 1e-8, std, 1.0)
+        self.boundary = None
+        if self._needs_boundary():
+            extra = relief_edges(work, ~border_mask(work)) if self.config.relief_map else None
+            self.boundary = boundary_map(work, self.config.boundary_valley_weight, extra)
+        self._star_cache = {}
+        self.luminance = color.rgb2gray(work) if self.config.radial_prior else None
+        self.tissue = ~ndi.binary_dilation(border_mask(image), iterations=4) if self.config.radial_prior else None
         self.weights = self._build_weights()
         self.border_superpixels = self._border_superpixels(image)
         self.clicks = []
@@ -125,12 +171,53 @@ class InteractiveSegmenter:
             edge = np.concatenate([edge, lab[ndi.binary_dilation(frame, iterations=3)]])
         return np.unique(edge)
 
+    def _needs_boundary(self) -> bool:
+        return self.config.boundary_edges or self.config.radial_prior
+
+    def star_prior(self) -> np.ndarray | None:
+        """Prior em estrela por superpixel (união das estrelas dos cliques de pólipo)."""
+        centers = [(c.row, c.col) for c in self.clicks if c.positive]
+        if not (self.config.radial_prior and centers):
+            return None
+        if self.config.radial_first_only:
+            centers = centers[:1]
+        pixel = np.zeros(self.labels.shape)
+        for center in centers:
+            others = ()
+            if self.config.radial_constrained:
+                others = tuple((c.row, c.col, c.positive) for c in self.clicks if (c.row, c.col) != center)
+            key = (center, others)
+            if key not in self._star_cache:
+                angles, radii = star_contour(
+                    self.boundary, center, max_step=self.config.radial_max_step, luminance=self.luminance,
+                    outward_weight=self.config.radial_outward, balloon=self.config.radial_balloon,
+                    constraints=others, valid=self.tissue,
+                )
+                mask = star_mask(self.labels.shape, center, angles, radii)
+                self._star_cache[key] = soft_prior(mask, self.config.radial_tau)
+            pixel = np.maximum(pixel, self._star_cache[key])
+        n = self.n_superpixels
+        return np.bincount(self.labels.ravel(), weights=pixel.ravel(), minlength=n) / np.maximum(
+            np.bincount(self.labels.ravel(), minlength=n), 1
+        )
+
+    def _column_weights(self) -> np.ndarray:
+        if not self.config.balance_groups:
+            return np.ones(len(self.feature_names))
+        groups = [feature_group(n) for n in self.feature_names]
+        sizes = {g: groups.count(g) for g in set(groups)}
+        return np.array([1.0 / sizes[g] for g in groups])
+
     def _build_weights(self) -> sparse.csr_matrix:
         adj = adjacency(self.labels).tocoo()
         diff = self.features[adj.row] - self.features[adj.col]
-        dist2 = (diff**2).sum(axis=1)
+        dist2 = (diff**2) @ self._column_weights()
         scale = self.config.graph_beta * max(float(np.median(dist2)), 1e-8)
         w = np.exp(-dist2 / scale)
+        if self.config.boundary_edges:
+            strength = np.asarray(pair_strength(self.labels, self.boundary)[adj.row, adj.col]).ravel()
+            ref = self.config.boundary_gamma * max(float(np.median(strength)), 1e-8)
+            w = w * np.exp(-strength / ref)
         n = self.labels.max() + 1
         return sparse.coo_matrix((w, (adj.row, adj.col)), shape=(n, n)).tocsr()
 
@@ -180,6 +267,12 @@ class InteractiveSegmenter:
         prob = self._superpixel_probability(idx, val)
         prob[idx] = val
         mask = prob[self.labels] > self.config.threshold
+        if self.config.pixel_refine:
+            clicks = [(c.row, c.col, c.positive) for c in self.clicks]
+            mask = refine_band(self.work, mask, clicks, self.config.refine_band, self.config.refine_beta)
+        if self.config.smooth_sigma > 0:
+            clicks = [(c.row, c.col, c.positive) for c in self.clicks]
+            mask = smooth_mask(mask, self.config.smooth_sigma, clicks)
         mask = self._postprocess(mask)
         return SegmentationResult(mask, prob, time.perf_counter() - start)
 
@@ -187,7 +280,13 @@ class InteractiveSegmenter:
         mode = self.config.classifier
         has_both = (val == 0).any() and (val == 1).any()
         if mode == "graph" or not has_both:
-            return graph_propagate(self.weights, idx, val.astype(float))
+            prior = self.star_prior()
+            if prior is None:
+                return graph_propagate(self.weights, idx, val.astype(float))
+            # Relativo ao grau médio, para o prior pesar o mesmo com ou sem as arestas de borda.
+            degree = float(self.weights.sum()) / self.n_superpixels
+            weight = degree * self.config.radial_weight / len(self.clicks) ** self.config.radial_decay
+            return graph_propagate(self.weights, idx, val.astype(float), prior=prior, prior_weight=weight)
         x_train, y_train = self.features[idx], val
         if mode == "rf":
             model = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=0)

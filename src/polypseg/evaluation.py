@@ -22,6 +22,7 @@ from polypseg.segmenter import CLASSIFIERS, InteractiveSegmenter, SegmenterConfi
 from polypseg.simulation import simulate
 from polypseg.superpixels import METHODS, SuperpixelConfig
 
+MODULES = ("boundary_edges", "radial_prior", "pixel_refine", "relief_map")
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
@@ -61,6 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--data", type=Path, required=True, help="pasta com images/ e masks/")
     p.add_argument("--max-clicks", type=int, default=10)
+    p.add_argument("--list", type=Path, help="arquivo com os nomes-base a avaliar, um por linha (ex.: data/dev.txt)")
     p.add_argument("--limit", type=int, default=0, help="avalia só as N primeiras imagens (0 = todas)")
     p.add_argument("--max-side", type=int, default=512, help="redimensiona o maior lado (0 = original)")
     p.add_argument("--method", choices=METHODS, default="slic")
@@ -68,7 +70,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--compactness", type=float, default=10.0)
     p.add_argument("--classifier", choices=CLASSIFIERS, default="graph")
     p.add_argument("--border-background", choices=("always", "auto", "never"), default="always")
-    p.add_argument("--features", default="color,lbp,glcm,gabor", help="grupos separados por vírgula")
+    p.add_argument("--features", default="color,lbp,glcm,gabor", help="grupos separados por vírgula (color, lbp, glcm, gabor, relief)")
+    p.add_argument("--balance-groups", action="store_true", help="cada grupo de descritores pesa o mesmo no grafo")
+    p.add_argument(
+        "--modules",
+        default="boundary_edges,radial_prior,pixel_refine",
+        help=f"módulos ligados, separados por vírgula ({', '.join(MODULES)}); 'none' desliga todos",
+    )
+    p.add_argument("--smooth", type=float, default=0.0, help="σ em px da suavização final da borda (0 desliga)")
     p.add_argument("--jobs", type=int, default=1, help="processos em paralelo")
     p.add_argument("--out", type=Path, help="CSV com Dice e IoU por imagem e clique")
     return p.parse_args(argv)
@@ -77,15 +86,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     groups = {g.strip() for g in args.features.split(",") if g.strip()}
+    modules = {m.strip() for m in args.modules.split(",") if m.strip() and m.strip() != "none"}
+    if unknown := modules - set(MODULES):
+        raise SystemExit(f"módulos desconhecidos: {sorted(unknown)}")
     config = SegmenterConfig(
         superpixels=SuperpixelConfig(args.method, args.n_segments, args.compactness),
         features=FeatureConfig(
-            color="color" in groups, lbp="lbp" in groups, glcm="glcm" in groups, gabor="gabor" in groups
+            color="color" in groups, lbp="lbp" in groups, glcm="glcm" in groups, gabor="gabor" in groups,
+            relief="relief" in groups,
         ),
         classifier=args.classifier,
         border_background=args.border_background,
+        balance_groups=args.balance_groups,
+        **{m: m in modules for m in MODULES},
+        smooth_sigma=args.smooth,
     )
     pairs = find_pairs(args.data)
+    if args.list:
+        wanted = {line.strip() for line in args.list.open() if line.strip()}
+        pairs = [pair for pair in pairs if pair[0].stem in wanted]
     if args.limit:
         pairs = pairs[: args.limit]
     if not pairs:
@@ -104,7 +123,8 @@ def main(argv: list[str] | None = None) -> None:
 
     dice_arr, iou_arr = np.array(all_dice), np.array(all_iou)
     print(f"\n{len(pairs)} imagens, {time.perf_counter() - start:.1f}s, configuração: {args.method} "
-          f"n={args.n_segments}, {args.classifier}, descritores={sorted(groups)}")
+          f"n={args.n_segments}, {args.classifier}, descritores={sorted(groups)}"
+          f"{' balanceados' if args.balance_groups else ''}, módulos={sorted(modules) or 'nenhum'}")
     print("cliques  mDice   mIoU")
     for k in range(args.max_clicks):
         print(f"{k + 1:>7}  {dice_arr[:, k].mean():.4f}  {iou_arr[:, k].mean():.4f}")

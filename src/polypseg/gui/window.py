@@ -8,16 +8,18 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, Signal, Slot
+from PySide6.QtGui import QAction, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDockWidget,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QMainWindow,
@@ -47,7 +49,16 @@ CLASSIFIER_LABELS = {
     "svm": "SVM",
     "rf": "Random Forest",
 }
+# Cores padrão das camadas sobrepostas (RGB); o usuário pode trocá-las no painel.
+OVERLAY_COLORS = {"mask": (46, 204, 113), "boundaries": (255, 221, 87), "gt": (236, 64, 255)}
+OVERLAY_LABELS = {"mask": "Máscara", "boundaries": "Fronteiras", "gt": "Gabarito"}
 BORDER_LABELS = {"always": "Sempre", "auto": "Só sem cliques de fundo", "never": "Nunca"}
+MODULE_LABELS = {
+    "boundary_edges": "Arestas cortadas pela borda",
+    "radial_prior": "Estrela em volta do clique",
+    "pixel_refine": "Refino da borda por pixel",
+    "relief_map": "Relevo local no mapa de borda",
+}
 
 
 def render_overlay(
@@ -58,19 +69,25 @@ def render_overlay(
     show_mask: bool = True,
     show_gt: bool = False,
     opacity: float = 0.45,
+    colors: dict[str, tuple[int, int, int]] | None = None,
+    boundary_width: int = 1,
 ) -> np.ndarray:
     """Camada RGBA uint8 com máscara, fronteiras dos superpixels e contorno do gabarito."""
+    colors = {**OVERLAY_COLORS, **(colors or {})}
     shape = (labels if labels is not None else mask).shape
     out = np.zeros((*shape, 4), dtype=np.uint8)
     if show_mask and mask is not None and mask.any():
-        out[mask] = (46, 204, 113, int(255 * opacity))
+        out[mask] = (*colors["mask"], int(255 * opacity))
         edge = mask & ~ndi.binary_erosion(mask, iterations=2)
-        out[edge] = (46, 204, 113, 255)
+        out[edge] = (*colors["mask"], 255)
     if show_boundaries and labels is not None:
-        out[boundaries(labels)] = (255, 221, 87, 140)
+        lines = boundaries(labels)
+        if boundary_width > 1:
+            lines = ndi.binary_dilation(lines, iterations=boundary_width - 1)
+        out[lines] = (*colors["boundaries"], 140)
     if show_gt and gt is not None and gt.any():
         edge = gt & ~ndi.binary_erosion(gt, iterations=2)
-        out[edge] = (236, 64, 255, 255)
+        out[edge] = (*colors["gt"], 255)
     return out
 
 
@@ -117,6 +134,12 @@ class MainWindow(QMainWindow):
         self._token = 0
         self._image_started = 0.0
         self._last_predict = 0.0
+        # As cores escolhidas ficam salvas entre sessões.
+        self.settings = QSettings("polypseg", "polypseg-gui")
+        self.overlay_colors = {}
+        for key, default in OVERLAY_COLORS.items():
+            saved = QColor(str(self.settings.value(f"colors/{key}", "")))
+            self.overlay_colors[key] = (saved.red(), saved.green(), saved.blue()) if saved.isValid() else default
 
         self.view = ImageView(self)
         self.view.clicked.connect(self.on_click)
@@ -167,11 +190,11 @@ class MainWindow(QMainWindow):
         self.method_combo = QComboBox()
         self.method_combo.addItems(METHODS)
         self.n_spin = QSpinBox()
-        self.n_spin.setRange(20, 2000)
-        self.n_spin.setSingleStep(25)
+        self.n_spin.setRange(10, 20000)
+        self.n_spin.setSingleStep(50)
         self.n_spin.setValue(self.segmenter.config.superpixels.n_segments)
         self.comp_spin = QDoubleSpinBox()
-        self.comp_spin.setRange(0.1, 100.0)
+        self.comp_spin.setRange(0.01, 1000.0)
         self.comp_spin.setValue(self.segmenter.config.superpixels.compactness)
         sp_form.addRow("Método", self.method_combo)
         sp_form.addRow("Quantidade", self.n_spin)
@@ -181,9 +204,9 @@ class MainWindow(QMainWindow):
         feat_box = QGroupBox("Descritores")
         feat_layout = QVBoxLayout(feat_box)
         self.feat_checks = {}
-        for key, text in (("color", "Cor (RGB, Lab, HSV)"), ("lbp", "Textura LBP"), ("glcm", "Textura GLCM (Haralick)"), ("gabor", "Banco de Gabor")):
+        for key, text in (("color", "Cor (RGB, Lab, HSV)"), ("lbp", "Textura LBP"), ("glcm", "Textura GLCM (Haralick)"), ("gabor", "Banco de Gabor"), ("relief", "Relevo (Hessiana, centro-entorno)")):
             box = QCheckBox(text)
-            box.setChecked(True)
+            box.setChecked(getattr(FeatureConfig(), key))
             feat_layout.addWidget(box)
             self.feat_checks[key] = box
         layout.addWidget(feat_box)
@@ -206,6 +229,30 @@ class MainWindow(QMainWindow):
         model_form.addRow("Borda como fundo", self.border_combo)
         layout.addWidget(model_box)
 
+        mod_box = QGroupBox("Módulos")
+        mod_layout = QVBoxLayout(mod_box)
+        self.module_checks = {}
+        defaults = SegmenterConfig()
+        for key, text in MODULE_LABELS.items():
+            box = QCheckBox(text)
+            box.setChecked(getattr(defaults, key))
+            box.toggled.connect(self.recompute)
+            mod_layout.addWidget(box)
+            self.module_checks[key] = box
+        smooth_form = QFormLayout()
+        self.smooth_spin = QDoubleSpinBox()
+        self.smooth_spin.setRange(0.0, 20.0)
+        self.smooth_spin.setSingleStep(1.0)
+        self.smooth_spin.setDecimals(1)
+        self.smooth_spin.setSuffix(" px")
+        self.smooth_spin.setSpecialValueText("desligada")
+        self.smooth_spin.setValue(defaults.smooth_sigma)
+        self.smooth_spin.setToolTip("σ da suavização final da borda; arredonda degraus e reentrâncias menores que σ")
+        self.smooth_spin.valueChanged.connect(self._on_model_changed)
+        smooth_form.addRow("Suavização da borda", self.smooth_spin)
+        mod_layout.addLayout(smooth_form)
+        layout.addWidget(mod_box)
+
         vis_box = QGroupBox("Visualização")
         vis_layout = QVBoxLayout(vis_box)
         self.show_boundaries = QCheckBox("Fronteiras dos superpixels")
@@ -222,6 +269,25 @@ class MainWindow(QMainWindow):
         self.opacity.valueChanged.connect(self.refresh_overlay)
         vis_layout.addWidget(QLabel("Opacidade da máscara"))
         vis_layout.addWidget(self.opacity)
+        width_form = QFormLayout()
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(1, 10)
+        self.width_spin.setSuffix(" px")
+        self.width_spin.setValue(int(self.settings.value("boundary_width", 1)))
+        self.width_spin.valueChanged.connect(self._on_width_changed)
+        width_form.addRow("Espessura das fronteiras", self.width_spin)
+        vis_layout.addLayout(width_form)
+        color_row = QHBoxLayout()
+        self.color_buttons = {}
+        for key, text in OVERLAY_LABELS.items():
+            button = QPushButton(text)
+            button.setToolTip(f"Escolher a cor: {text.lower()}")
+            button.clicked.connect(lambda _=False, k=key: self.choose_color(k))
+            color_row.addWidget(button)
+            self.color_buttons[key] = button
+        vis_layout.addWidget(QLabel("Cores"))
+        vis_layout.addLayout(color_row)
+        self._update_color_buttons()
         layout.addWidget(vis_box)
 
         info_box = QGroupBox("Resultado")
@@ -259,9 +325,12 @@ class MainWindow(QMainWindow):
             features=FeatureConfig(
                 color=c["color"].isChecked(), lbp=c["lbp"].isChecked(),
                 glcm=c["glcm"].isChecked(), gabor=c["gabor"].isChecked(),
+                relief=c["relief"].isChecked(),
             ),
             classifier=self.clf_combo.currentData(),
             border_background=self.border_combo.currentData(),
+            smooth_sigma=self.smooth_spin.value(),
+            **{key: box.isChecked() for key, box in self.module_checks.items()},
         )
 
     # ---------------------------------------------------------------- arquivos
@@ -356,9 +425,11 @@ class MainWindow(QMainWindow):
             "n_clicks": len(self.segmenter.clicks),
             "annotation_seconds": round(time.perf_counter() - self._image_started, 2),
             "superpixels": vars(cfg.superpixels),
-            "features": {k: getattr(cfg.features, k) for k in ("color", "lbp", "glcm", "gabor")},
+            "features": {k: getattr(cfg.features, k) for k in ("color", "lbp", "glcm", "gabor", "relief")},
             "classifier": cfg.classifier,
             "border_background": cfg.border_background,
+            "modules": {key: getattr(cfg, key) for key in MODULE_LABELS},
+            "smooth_sigma": cfg.smooth_sigma,
         }
         if self.gt is not None:
             meta.update(dice=dice(self.mask, self.gt), iou=iou(self.mask, self.gt))
@@ -411,6 +482,7 @@ class MainWindow(QMainWindow):
         cfg = self.current_config()
         self.segmenter.config.classifier = cfg.classifier
         self.segmenter.config.border_background = cfg.border_background
+        self.segmenter.config.smooth_sigma = cfg.smooth_sigma
         if self.ready:
             self.run_prediction()
 
@@ -447,8 +519,28 @@ class MainWindow(QMainWindow):
                 self.segmenter.labels, self.mask, self.gt,
                 self.show_boundaries.isChecked(), self.show_mask.isChecked(),
                 self.show_gt.isChecked() and self.gt is not None, self.opacity.value() / 100.0,
+                self.overlay_colors, self.width_spin.value(),
             )
         )
+
+    def _on_width_changed(self, value: int):
+        self.settings.setValue("boundary_width", value)
+        self.refresh_overlay()
+
+    def choose_color(self, key: str):
+        color = QColorDialog.getColor(QColor(*self.overlay_colors[key]), self, f"Cor: {OVERLAY_LABELS[key].lower()}")
+        if not color.isValid():
+            return
+        self.overlay_colors[key] = (color.red(), color.green(), color.blue())
+        self.settings.setValue(f"colors/{key}", color.name())
+        self._update_color_buttons()
+        self.refresh_overlay()
+
+    def _update_color_buttons(self):
+        for key, button in self.color_buttons.items():
+            r, g, b = self.overlay_colors[key]
+            text = "black" if 0.299 * r + 0.587 * g + 0.114 * b > 128 else "white"
+            button.setStyleSheet(f"background-color: rgb({r}, {g}, {b}); color: {text};")
 
     def update_info(self):
         n_pos = sum(c.positive for c in self.segmenter.clicks)

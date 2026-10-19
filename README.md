@@ -340,6 +340,29 @@ Diferença pareada v3 − v2 (IC 95% por bootstrap; Wilcoxon com correção de H
   ou um pouco pior. O prior acerta mais o 1º clique, mas atrapalha um pouco as
   correções finas nas bases com pólipos pequenos.
 
+## Segmentação automática (YOLO-seg)
+
+Sem cliques: um YOLO-seg ([Ultralytics](https://docs.ultralytics.com/tasks/segment/))
+detecta cada pólipo com uma caixa e já devolve a máscara da instância; a máscara final é
+a união das instâncias. O treino usa o treino do PraNet (900 Kvasir + 550
+CVC-ClinicDB), que não se sobrepõe ao `TestDataset`. O ultralytics é AGPL-3, por isso
+fica num extra opcional.
+
+```bash
+pip install -e ".[yolo,data]"
+python scripts/download_data.py --only pranet-train      # data/TrainDataset (1450 pares)
+polypseg-auto dataset --src data/TrainDataset --out data/yolo   # polígonos YOLO, 10% para validação
+yolo segment train model=yolo11s-seg.pt data=data/yolo/data.yaml imgsz=640 epochs=100 batch=8 patience=20 project=$PWD/results/yolo name=s
+polypseg-auto eval --weights results/yolo/s/weights/best.pt --data data/TestDataset/* --out results/yolo.csv
+```
+
+A validação (10%, semente 0) serve só para o early stopping. Com 4 GB de GPU, se faltar
+memória, use `batch=4` ou `yolo11n-seg.pt`. O `project` é absoluto porque o ultralytics
+prefixa caminhos relativos com o `runs_dir` global (`yolo settings`). O `eval` relata Dice e IoU médios por base
+(uma imagem sem detecção conta como Dice 0) e quantas imagens ficaram sem detecção.
+
+Resultados: pendentes.
+
 ## Estrutura
 
 ```
@@ -350,6 +373,7 @@ src/polypseg/
   boundary.py        mapa de borda e força de borda entre superpixels vizinhos
   radial.py          contorno em estrela por transformada polar e DP circular
   boxes.py           segmentação por caixas, uma por pólipo, cada uma independente
+  auto.py            segmentação automática com YOLO-seg (polypseg-auto)
   refine.py          random walker por pixel na faixa da borda e suavização
   relief.py          pseudo-elevação coaxial e Local Relief Model
   segmenter.py       segmentador interativo (grafo, híbrido, SVM, RF)
@@ -375,6 +399,7 @@ Técnicas clássicas já testadas e pendentes, com resultados: [TODO.md](TODO.md
   (por exemplo, as 550 do CVC-ClinicDB no treino do PraNet) e rodar um teste limpo.
 - Tratar pólipos mais escuros que o entorno na estrela sem piorar os claros.
 - Comparar com SAM, SAM 2 e MedSAM usando os mesmos cliques simulados.
-- Fase automática: classificador de superpixels treinado em várias imagens e
-  U-Net treinada com as máscaras assistidas como pseudo-rótulos.
+- Fase automática: começou com o YOLO-seg (ver [Segmentação automática](#segmentação-automática-yolo-seg)).
+  Faltam o classificador de superpixels treinado em várias imagens e a U-Net treinada com
+  as máscaras assistidas como pseudo-rótulos.
 - Estudo com anotadores reais, usando o tempo gravado no `.json`.

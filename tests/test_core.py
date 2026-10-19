@@ -415,3 +415,21 @@ def test_box_click_routing_on_overlap():
     assert seg.add_click(48, 92, True) == [0]  # 27/90 = 0,30 contra 36/84 = 0,43
     assert seg.add_click(48, 104, True) == [1]  # 39/90 = 0,43 contra 24/84 = 0,29
     assert seg.add_click(48, 98, False) == [0, 1]  # fundo vale para as duas
+
+
+def test_mask_to_polygons_roundtrip():
+    from skimage.draw import disk, polygon
+
+    from polypseg.auto import mask_to_polygons
+
+    h, w = 120, 200
+    mask = np.zeros((h, w), bool)
+    mask[disk((40, 50), 25)] = True
+    mask[disk((80, 150), 30, shape=mask.shape)] = True
+    polys = mask_to_polygons(mask)
+    assert len(polys) == 2
+    back = np.zeros_like(mask)
+    for xy in polys:
+        assert xy.min() >= 0 and xy.max() <= 1
+        back[polygon(xy[:, 1] * h, xy[:, 0] * w, mask.shape)] = True
+    assert iou(back, mask) > 0.95

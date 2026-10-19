@@ -7,8 +7,10 @@
 - data/CVC-ClinicDB-dev/{images,masks}: base de desenvolvimento com 120 das 550 imagens
   do CVC-ClinicDB no treino do PraNet (nomes numéricos), sorteadas com semente 0. Não
   se sobrepõe a nenhum conjunto de teste.
+- data/TrainDataset/{images,masks}: treino completo do PraNet (900 Kvasir + 550
+  CVC-ClinicDB), para a segmentação automática. Só com --only pranet-train.
 
-Uso: pip install -e ".[data]" && python scripts/download_data.py [--only kvasir|pranet|cvc-dev]
+Uso: pip install -e ".[data]" && python scripts/download_data.py [--only kvasir|pranet|cvc-dev|pranet-train]
 """
 
 from __future__ import annotations
@@ -87,10 +89,19 @@ def download_cvc_dev(root: Path, workers: int = 8) -> None:
     _fetch_all(targets, workers)
 
 
+def download_pranet_train(root: Path, workers: int = 8) -> None:
+    from remotezip import RemoteZip
+
+    prefix = "dataset/TrainDataset/"
+    with RemoteZip(PRANET_ZIP) as z:
+        names = [n for n in z.namelist() if n.startswith(prefix) and not n.endswith("/")]
+    _fetch_all({n: root / "TrainDataset" / n[len(prefix):] for n in names}, workers)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=Path("data"))
-    parser.add_argument("--only", choices=("kvasir", "pranet", "cvc-dev"))
+    parser.add_argument("--only", choices=("kvasir", "pranet", "cvc-dev", "pranet-train"))
     args = parser.parse_args()
     if args.only in (None, "kvasir"):
         download_kvasir(args.root)
@@ -98,6 +109,8 @@ def main() -> None:
         download_pranet(args.root)
     if args.only in (None, "cvc-dev"):
         download_cvc_dev(args.root)
+    if args.only == "pranet-train":  # ponytail: fora do padrão, só a fase automática precisa
+        download_pranet_train(args.root)
     for d in sorted(args.root.glob("**/images")):
         print(f"{d.parent}: {sum(1 for _ in d.iterdir())} imagens")
 

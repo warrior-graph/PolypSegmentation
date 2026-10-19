@@ -21,10 +21,12 @@ dependencies = [
 dev = ["pytest>=8"]
 data = ["huggingface_hub>=0.24", "remotezip>=0.12"]
 xgb = ["xgboost>=2.0"]
+yolo = ["ultralytics>=8.3"]
 
 [project.scripts]
 polypseg-gui = "polypseg.gui.app:main"
 polypseg-eval = "polypseg.evaluation:main"
+polypseg-auto = "polypseg.auto:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/polypseg"]

@@ -322,3 +322,27 @@ def test_snake_band_only_changes_the_band():
     out = snake_band(image, blocky, [(64, 64, True)], iterations=20, band=8)
     far = ~ndi.binary_dilation(blocky, iterations=8) | ndi.binary_erosion(blocky, iterations=8)
     assert np.array_equal(out[far], blocky[far])
+
+
+def test_region_term_pulls_star_to_the_color_model():
+    from polypseg.radial import color_model, star_contour, star_mask
+
+    image, gt = _dark_rim_disc(size=128, radius=30)
+    lab = color.rgb2lab(image)
+    yy, xx = np.mgrid[:128, :128]
+    fg = np.hypot(yy - 64, xx - 64) < 8
+    bg = np.zeros_like(gt)
+    bg[:10] = True
+    prob = color_model(lab, fg, bg)
+    assert prob[gt].mean() > 0.8 and prob[~gt & bg].mean() < 0.2
+    # Sem evidência de borda, só o termo de região decide o raio.
+    angles, radii = star_contour(np.zeros(gt.shape), (64, 64), region=prob, region_weight=50.0)
+    assert dice(star_mask(gt.shape, (64, 64), angles, radii), gt) > 0.9
+
+
+def test_color_model_star_on_first_click():
+    image, gt = _dark_rim_disc(size=128, radius=30)
+    seg = InteractiveSegmenter(SegmenterConfig(superpixels=SuperpixelConfig(n_segments=120), radial_color_model=10.0))
+    seg.set_image(image)
+    seg.add_click(64, 64, True)
+    assert dice(seg.predict().mask, gt) > 0.85

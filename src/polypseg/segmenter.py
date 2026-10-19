@@ -17,7 +17,7 @@ from polypseg.background import boundary_connectivity
 from polypseg.boundary import boundary_map, pair_strength
 from polypseg.features import FeatureConfig, compute_features, feature_group
 from polypseg.preprocessing import border_mask, preprocess
-from polypseg.radial import region_separation, soft_prior, star_contour, star_mask
+from polypseg.radial import color_model, region_separation, soft_prior, star_contour, star_mask
 from polypseg.refine import refine_band, smooth_mask, snake_band
 from polypseg.relief import relief_edges
 from polypseg.superpixels import SuperpixelConfig, adjacency, compute_superpixels
@@ -69,6 +69,10 @@ class SegmenterConfig:
     # O contorno de pólipo escuro só vence se separar a cor (1 + margem) vezes melhor:
     # com a luz junto da câmera, a cúpula clara é o caso comum.
     radial_dark_margin: float = 0.0
+    # Peso do termo de região na DP da estrela do 1º clique (0 desliga): P(pólipo) por um modelo
+    # de cor (GMM em Lab) ajustado ao disco do clique (pólipo) e aos superpixels de borda (fundo).
+    # Só vale enquanto não há outros cliques; depois eles corrigem a estrela.
+    radial_color_model: float = 0.0
     # Peso do prior dividido por (nº de cliques)^decay, para os cliques corrigirem a estrela.
     radial_decay: float = 1.0
     # Random walker por pixel na faixa de ±refine_band px em volta da borda da máscara.
@@ -171,7 +175,8 @@ class InteractiveSegmenter:
             )
         self._star_cache = {}
         self.luminance = color.rgb2gray(work) if self.config.radial_prior else None
-        self.lab = color.rgb2lab(work) if self.config.radial_prior and self.config.radial_select else None
+        needs_lab = self.config.radial_select or self.config.radial_color_model > 0
+        self.lab = color.rgb2lab(work) if self.config.radial_prior and needs_lab else None
         self.tissue = ~ndi.binary_dilation(border_mask(image), iterations=4) if self.config.radial_prior else None
         self.weights = self._build_weights()
         self.border_superpixels = self._border_superpixels(image)
@@ -206,12 +211,13 @@ class InteractiveSegmenter:
         options = [(True, cfg.radial_balloon)]
         if cfg.radial_select:
             options = [(bright, b) for bright in cfg.radial_select_polarities for b in cfg.radial_select_balloons]
+        region = self._color_model(center) if cfg.radial_color_model > 0 and not others else None
         best, best_score = None, -np.inf
         for bright, balloon in options:
             angles, radii = star_contour(
                 self.boundary, center, max_step=cfg.radial_max_step, luminance=self.luminance,
                 outward_weight=cfg.radial_outward, balloon=balloon, constraints=others,
-                valid=self.tissue, bright_dome=bright,
+                valid=self.tissue, bright_dome=bright, region=region, region_weight=cfg.radial_color_model,
             )
             mask = star_mask(self.labels.shape, center, angles, radii)
             if len(options) == 1:
@@ -222,6 +228,24 @@ class InteractiveSegmenter:
             if score > best_score:
                 best, best_score = mask, score
         return best
+
+    def _color_model(self, center: tuple[int, int]) -> np.ndarray | None:
+        """P(pólipo) por pixel para o termo de região da estrela.
+
+        Amostra de pólipo: disco do clique com o menor raio da estrela sem termo de região
+        (ao menos 8 px). Amostra de fundo: superpixels de borda, como na regra de fundo.
+        """
+        cfg = self.config
+        _, radii = star_contour(
+            self.boundary, center, max_step=cfg.radial_max_step, luminance=self.luminance,
+            outward_weight=cfg.radial_outward, balloon=cfg.radial_balloon, valid=self.tissue,
+        )
+        rr, cc = np.ogrid[: self.labels.shape[0], : self.labels.shape[1]]
+        fg = ((rr - center[0]) ** 2 + (cc - center[1]) ** 2 <= max(radii.min(), 8.0) ** 2) & self.tissue
+        bg = np.isin(self.labels, self.border_superpixels) & self.tissue & ~fg
+        if fg.sum() < 50 or bg.sum() < 50:
+            return None
+        return color_model(self.lab, fg, bg)
 
     def _needs_boundary(self) -> bool:
         return self.config.boundary_edges or self.config.radial_prior

@@ -30,6 +30,8 @@ def star_contour(
     margin: float = 3.0,
     valid: np.ndarray | None = None,
     bright_dome: bool = True,
+    region: np.ndarray | None = None,
+    region_weight: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Ângulos e raios (em pixels) do contorno fechado de maior evidência de borda.
 
@@ -47,6 +49,10 @@ def star_contour(
     Com ``luminance``, parte da evidência vem do escurecimento ao sair do clique
     (−∂L/∂r > 0), já que a cúpula iluminada do pólipo termina num vale. ``balloon``
     desconta o custo de raios maiores, para o contorno não parar em bordas internas.
+
+    ``region`` é P(pólipo) por pixel. Vira um termo de região ao longo de cada raio, como na
+    energia de Chan e Vese (2001): o custo do raio r soma (0,5 − p) de todos os pixels até r,
+    então englobar pixels de fundo encarece o contorno e englobar pixels de pólipo o barateia.
     """
     h, w = bmap.shape
     if r_max is None:
@@ -69,6 +75,9 @@ def star_contour(
     if valid is not None:
         inside = ndi.map_coordinates(valid.astype(float), [rows, cols], order=0, mode="constant", cval=0.0) >= 0.5
         cost += np.cumsum(~inside, axis=1) > 0
+    if region is not None and region_weight > 0:
+        p = ndi.map_coordinates(region, [rows, cols], order=1, mode="constant", cval=0.0)
+        cost += region_weight * np.cumsum(0.5 - p, axis=1) / radii.size
     step = 2 * np.pi / n_angles
     for row, col, positive in constraints:
         dist = np.hypot(row - center[0], col - center[1])
@@ -128,6 +137,29 @@ def region_separation(lab: np.ndarray, mask: np.ndarray, valid: np.ndarray | Non
         return 0.0
     a, b = lab[mask], lab[outside]
     return float((((a.mean(0) - b.mean(0)) ** 2) / (a.var(0) + b.var(0) + 1e-6)).sum())
+
+
+def color_model(
+    lab: np.ndarray, fg: np.ndarray, bg: np.ndarray, components: int = 3, samples: int = 3000, seed: int = 0
+) -> np.ndarray:
+    """P(pólipo) por pixel por duas misturas gaussianas em Lab, uma por classe (como no GrabCut).
+
+    ``fg`` e ``bg`` são máscaras das amostras de cada classe; a probabilidade é a sigmoide da
+    razão de log-verossimilhança, com prioris iguais.
+    """
+    from sklearn.mixture import GaussianMixture
+
+    rng = np.random.default_rng(seed)
+    flat = lab.reshape(-1, 3)
+    llr = np.zeros(flat.shape[0])
+    for sign, mask in ((1.0, fg), (-1.0, bg)):
+        pts = lab[mask]
+        if pts.shape[0] > samples:
+            pts = pts[rng.choice(pts.shape[0], samples, replace=False)]
+        k = max(1, min(components, pts.shape[0] // 50))
+        gmm = GaussianMixture(k, covariance_type="full", reg_covar=1e-2, random_state=seed).fit(pts)
+        llr += sign * gmm.score_samples(flat)
+    return (1.0 / (1.0 + np.exp(-np.clip(llr, -30, 30)))).reshape(lab.shape[:2])
 
 
 def star_mask(shape: tuple[int, int], center: tuple[int, int], angles: np.ndarray, radii: np.ndarray) -> np.ndarray:

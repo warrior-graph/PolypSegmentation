@@ -126,7 +126,7 @@ def test_graph_propagate_respects_seeds():
 
 @pytest.mark.parametrize("classifier", CLASSIFIERS)
 def test_segmenter_segments_synthetic_polyp(synthetic, classifier):
-    if classifier == "xgb":
+    if classifier.startswith("xgb"):
         pytest.importorskip("xgboost")
     image, gt = synthetic
     # Sem a estrela: aqui o pólipo é mais escuro que a mucosa, o contrário do que ela supõe

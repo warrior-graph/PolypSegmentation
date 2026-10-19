@@ -22,15 +22,19 @@ from polypseg.refine import refine_band, smooth_mask, snake_band
 from polypseg.relief import relief_edges
 from polypseg.superpixels import SuperpixelConfig, adjacency, compute_superpixels
 
-CLASSIFIERS = ("graph", "hybrid", "svm", "rf", "xgb")
+CLASSIFIERS = ("graph", "hybrid", "svm", "rf", "xgb", "xgb_graph")
 
 
 @dataclass
 class SegmenterConfig:
     superpixels: SuperpixelConfig = field(default_factory=SuperpixelConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
-    # graph = random walker no grafo de superpixels; hybrid = SVM como prior + random walker.
+    # graph = random walker no grafo de superpixels; hybrid = SVM como prior + random walker;
+    # xgb_graph = XGBoost como mais um prior do random walker, junto com a estrela e o geodésico.
     classifier: str = "graph"
+    # Peso do prior do classificador no modo xgb_graph, relativo ao grau médio; não decai com os
+    # cliques, porque o classificador melhora com eles.
+    classifier_weight: float = 0.1
     remove_specular: bool = True
     # Superpixels da borda da imagem como fundo: "always", "auto" (só sem cliques de fundo) ou "never".
     border_background: str = "always"
@@ -451,13 +455,14 @@ class InteractiveSegmenter:
     def _superpixel_probability(self, idx: np.ndarray, val: np.ndarray) -> np.ndarray:
         mode = self.config.classifier
         has_both = (val == 0).any() and (val == 1).any()
-        if mode == "graph" or not has_both:
+        if mode in ("graph", "xgb_graph") or not has_both:
+            clf = self._fit_xgb(idx, val) if mode == "xgb_graph" and has_both else None
             star = self.star_prior()
             limit = self.config.geodesic_max_clicks
             geo_on = self.config.geodesic_prior > 0 and (limit <= 0 or len(self.clicks) <= limit)
             geo = self._geodesic_prior(idx, val) if geo_on else None
             solve = graph_cut if self.config.graph_solver == "cut" else graph_propagate
-            if star is None and self.background is None and geo is None:
+            if star is None and self.background is None and geo is None and clf is None:
                 return solve(self.weights, idx, val.astype(float))
             # Pesos relativos ao grau médio, para valerem o mesmo com ou sem as arestas de borda.
             # Os priors somam-se: λ·p = λ_e·estrela + λ_f·0 + λ_g·geodésico.
@@ -468,8 +473,9 @@ class InteractiveSegmenter:
             if self.background is not None:
                 lam_bg = degree * self.config.background_prior * self.background / decay
             lam_geo = degree * self.config.geodesic_prior / decay if geo is not None else 0.0
-            lam = lam_star + lam_bg + lam_geo
-            pull = (0.0 if star is None else lam_star * star) + (0.0 if geo is None else lam_geo * geo)
+            lam_clf = degree * self.config.classifier_weight if clf is not None else 0.0
+            lam = lam_star + lam_bg + lam_geo + lam_clf
+            pull = sum(lam_p * p for lam_p, p in ((lam_star, star), (lam_geo, geo), (lam_clf, clf)) if p is not None)
             target = np.broadcast_to(pull, (self.n_superpixels,)) / np.maximum(lam, 1e-12)
             return solve(self.weights, idx, val.astype(float), prior=target, prior_weight=lam + 1e-12)
         x_train, y_train = self.features[idx], val
@@ -478,16 +484,7 @@ class InteractiveSegmenter:
             model.fit(x_train, y_train)
             return model.predict_proba(self.features)[:, 1]
         if mode == "xgb":
-            # Extra opcional: pip install -e ".[xgb]". n_jobs=1 porque a avaliação já roda em paralelo.
-            from xgboost import XGBClassifier
-
-            n_pos = int((y_train == 1).sum())
-            model = XGBClassifier(
-                n_estimators=100, max_depth=3, learning_rate=0.3, n_jobs=1, verbosity=0,
-                scale_pos_weight=(y_train.size - n_pos) / max(n_pos, 1),  # equivale ao class_weight="balanced"
-            )
-            model.fit(x_train, y_train)
-            return model.predict_proba(self.features)[:, 1]
+            return self._fit_xgb(idx, val)
         # Kernel linear: com poucos cliques o RBF só reconhece o próprio superpixel clicado.
         model = SVC(kernel="linear", C=0.1, class_weight="balanced")
         model.fit(x_train, y_train)
@@ -499,6 +496,19 @@ class InteractiveSegmenter:
                 self.weights, idx, val.astype(float), prior=prob, prior_weight=self.config.graph_prior_weight
             )
         raise ValueError(f"classificador desconhecido: {mode!r}")
+
+    def _fit_xgb(self, idx: np.ndarray, val: np.ndarray) -> np.ndarray:
+        """P(pólipo) por superpixel de um XGBoost treinado nas sementes."""
+        # Extra opcional: pip install -e ".[xgb]". n_jobs=1 porque a avaliação já roda em paralelo.
+        from xgboost import XGBClassifier
+
+        n_pos = int((val == 1).sum())
+        model = XGBClassifier(
+            n_estimators=100, max_depth=3, learning_rate=0.3, n_jobs=1, verbosity=0,
+            scale_pos_weight=(val.size - n_pos) / max(n_pos, 1),  # equivale ao class_weight="balanced"
+        )
+        model.fit(self.features[idx], val)
+        return model.predict_proba(self.features)[:, 1]
 
     def _geodesic_prior(self, idx: np.ndarray, val: np.ndarray) -> np.ndarray | None:
         """d_fundo / (d_pólipo + d_fundo) por superpixel, pelas distâncias geodésicas às sementes."""

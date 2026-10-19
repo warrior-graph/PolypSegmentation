@@ -50,6 +50,7 @@ CLASSIFIER_LABELS = {
     "svm": "SVM",
     "rf": "Random Forest",
     "xgb": "XGBoost",
+    "xgb_graph": "XGBoost + grafo",
 }
 # Cores padrão das camadas sobrepostas (RGB); o usuário pode trocá-las no painel.
 OVERLAY_COLORS = {"mask": (46, 204, 113), "boundaries": (255, 221, 87), "gt": (236, 64, 255)}

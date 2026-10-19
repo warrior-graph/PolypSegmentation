@@ -13,11 +13,12 @@ from skimage import color
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.svm import SVC
 
+from polypseg.background import boundary_connectivity
 from polypseg.boundary import boundary_map, pair_strength
 from polypseg.features import FeatureConfig, compute_features, feature_group
 from polypseg.preprocessing import border_mask, preprocess
-from polypseg.radial import soft_prior, star_contour, star_mask
-from polypseg.refine import refine_band, smooth_mask
+from polypseg.radial import region_separation, soft_prior, star_contour, star_mask
+from polypseg.refine import refine_band, smooth_mask, snake_band
 from polypseg.relief import relief_edges
 from polypseg.superpixels import SuperpixelConfig, adjacency, compute_superpixels
 
@@ -42,6 +43,10 @@ class SegmenterConfig:
     boundary_edges: bool = True
     boundary_gamma: float = 0.5
     boundary_valley_weight: float = 0.25
+    # Soma ao mapa de borda o gradiente do índice de hemoglobina, IHb = 32·log₂(R/G).
+    boundary_hemoglobin: bool = False
+    # Atenua o mapa de borda sobre vasos (filtro de Frangi); 0 desliga, 1 zera sobre vasos.
+    boundary_vessel: float = 0.0
     # Soma ao mapa de borda a descontinuidade do relevo local (sombreamento coaxial + LRM).
     relief_map: bool = False
     # Prior em estrela: contorno radial de maior borda em volta de cada clique de pólipo.
@@ -56,12 +61,25 @@ class SegmenterConfig:
     # Os demais cliques viram restrições do contorno da estrela (por fora dos de pólipo,
     # por dentro dos de fundo).
     radial_constrained: bool = True
+    # Escolha do contorno do 1º clique entre candidatos (duas polaridades e dois níveis de
+    # expansão) pela separação de cor entre dentro e fora; False mantém um único contorno.
+    radial_select: bool = False
+    radial_select_balloons: tuple[float, ...] = (0.1, 0.25)
+    radial_select_polarities: tuple[bool, ...] = (True, False)
+    # O contorno de pólipo escuro só vence se separar a cor (1 + margem) vezes melhor:
+    # com a luz junto da câmera, a cúpula clara é o caso comum.
+    radial_dark_margin: float = 0.0
     # Peso do prior dividido por (nº de cliques)^decay, para os cliques corrigirem a estrela.
     radial_decay: float = 1.0
     # Random walker por pixel na faixa de ±refine_band px em volta da borda da máscara.
     pixel_refine: bool = True
     refine_band: int = 14
     refine_beta: float = 4.0
+    # Prior de fundo por conectividade com a borda (0 desliga): cada superpixel é puxado para
+    # fundo com peso força · P(fundo), relativo ao grau médio, como o prior da estrela.
+    background_prior: float = 0.0
+    # Iterações do contorno ativo geodésico morfológico depois do refino (0 desliga).
+    snake_iterations: int = 0
     # Suavização final da borda (σ em pixels; 0 desliga), já que os pólipos são arredondados.
     smooth_sigma: float = 0.0
     graph_prior_weight: float = 0.05
@@ -87,11 +105,12 @@ def graph_propagate(
     seed_idx: np.ndarray,
     seed_val: np.ndarray,
     prior: np.ndarray | None = None,
-    prior_weight: float = 1e-3,
+    prior_weight: float | np.ndarray = 1e-3,
 ) -> np.ndarray:
     """Random walker no grafo com sementes fixas e um termo opcional de prior por nó.
 
-    Resolve (L_UU + λI) x_U = -L_US x_S + λ prior_U, com L = D - W.
+    Resolve (L_UU + Λ) x_U = -L_US x_S + Λ prior_U, com L = D - W e Λ = diag(λ); λ pode
+    ser um escalar ou um peso por nó.
     """
     n = weights.shape[0]
     if prior is None:
@@ -104,9 +123,10 @@ def graph_propagate(
     if unseeded.size == 0:
         return x
     lap = lap.tocsr()
-    l_uu = lap[unseeded][:, unseeded] + prior_weight * sparse.identity(unseeded.size)
+    lam = np.broadcast_to(np.asarray(prior_weight, dtype=np.float64), (n,))[unseeded]
+    l_uu = lap[unseeded][:, unseeded] + sparse.diags(lam)
     l_us = lap[unseeded][:, seed_idx]
-    rhs = -l_us @ seed_val.astype(np.float64) + prior_weight * prior[unseeded]
+    rhs = -l_us @ seed_val.astype(np.float64) + lam * prior[unseeded]
     x[unseeded] = np.atleast_1d(spsolve(l_uu.tocsc(), rhs))
     return np.clip(x, 0.0, 1.0)
 
@@ -121,9 +141,11 @@ class InteractiveSegmenter:
         self.feature_names: list[str] = []
         self.weights: sparse.csr_matrix | None = None
         self.border_superpixels: np.ndarray = np.empty(0, dtype=int)
+        self.background: np.ndarray | None = None
         self.boundary: np.ndarray | None = None
         self._star_cache: dict[tuple, np.ndarray] = {}
         self.luminance: np.ndarray | None = None
+        self.lab: np.ndarray | None = None
         self.tissue: np.ndarray | None = None
         self.clicks: list[Click] = []
         self.setup_time = 0.0
@@ -143,12 +165,19 @@ class InteractiveSegmenter:
         self.boundary = None
         if self._needs_boundary():
             extra = relief_edges(work, ~border_mask(work)) if self.config.relief_map else None
-            self.boundary = boundary_map(work, self.config.boundary_valley_weight, extra)
+            self.boundary = boundary_map(
+                work, self.config.boundary_valley_weight, extra,
+                self.config.boundary_hemoglobin, self.config.boundary_vessel,
+            )
         self._star_cache = {}
         self.luminance = color.rgb2gray(work) if self.config.radial_prior else None
+        self.lab = color.rgb2lab(work) if self.config.radial_prior and self.config.radial_select else None
         self.tissue = ~ndi.binary_dilation(border_mask(image), iterations=4) if self.config.radial_prior else None
         self.weights = self._build_weights()
         self.border_superpixels = self._border_superpixels(image)
+        self.background = None
+        if self.config.background_prior > 0:
+            self.background = boundary_connectivity(work, self.labels, self.border_superpixels)
         self.clicks = []
         self.setup_time = time.perf_counter() - start
 
@@ -171,6 +200,29 @@ class InteractiveSegmenter:
             edge = np.concatenate([edge, lab[ndi.binary_dilation(frame, iterations=3)]])
         return np.unique(edge)
 
+    def _star_region(self, center: tuple[int, int], others: tuple) -> np.ndarray:
+        """Máscara da estrela; com ``radial_select``, o candidato de maior separação de cor."""
+        cfg = self.config
+        options = [(True, cfg.radial_balloon)]
+        if cfg.radial_select:
+            options = [(bright, b) for bright in cfg.radial_select_polarities for b in cfg.radial_select_balloons]
+        best, best_score = None, -np.inf
+        for bright, balloon in options:
+            angles, radii = star_contour(
+                self.boundary, center, max_step=cfg.radial_max_step, luminance=self.luminance,
+                outward_weight=cfg.radial_outward, balloon=balloon, constraints=others,
+                valid=self.tissue, bright_dome=bright,
+            )
+            mask = star_mask(self.labels.shape, center, angles, radii)
+            if len(options) == 1:
+                return mask
+            score = region_separation(self.lab, mask, self.tissue)
+            if not bright:
+                score /= 1.0 + cfg.radial_dark_margin
+            if score > best_score:
+                best, best_score = mask, score
+        return best
+
     def _needs_boundary(self) -> bool:
         return self.config.boundary_edges or self.config.radial_prior
 
@@ -188,13 +240,7 @@ class InteractiveSegmenter:
                 others = tuple((c.row, c.col, c.positive) for c in self.clicks if (c.row, c.col) != center)
             key = (center, others)
             if key not in self._star_cache:
-                angles, radii = star_contour(
-                    self.boundary, center, max_step=self.config.radial_max_step, luminance=self.luminance,
-                    outward_weight=self.config.radial_outward, balloon=self.config.radial_balloon,
-                    constraints=others, valid=self.tissue,
-                )
-                mask = star_mask(self.labels.shape, center, angles, radii)
-                self._star_cache[key] = soft_prior(mask, self.config.radial_tau)
+                self._star_cache[key] = soft_prior(self._star_region(center, others), self.config.radial_tau)
             pixel = np.maximum(pixel, self._star_cache[key])
         n = self.n_superpixels
         return np.bincount(self.labels.ravel(), weights=pixel.ravel(), minlength=n) / np.maximum(
@@ -270,6 +316,9 @@ class InteractiveSegmenter:
         if self.config.pixel_refine:
             clicks = [(c.row, c.col, c.positive) for c in self.clicks]
             mask = refine_band(self.work, mask, clicks, self.config.refine_band, self.config.refine_beta)
+        if self.config.snake_iterations > 0:
+            clicks = [(c.row, c.col, c.positive) for c in self.clicks]
+            mask = snake_band(self.work, mask, clicks, self.config.snake_iterations)
         if self.config.smooth_sigma > 0:
             clicks = [(c.row, c.col, c.positive) for c in self.clicks]
             mask = smooth_mask(mask, self.config.smooth_sigma, clicks)
@@ -280,13 +329,20 @@ class InteractiveSegmenter:
         mode = self.config.classifier
         has_both = (val == 0).any() and (val == 1).any()
         if mode == "graph" or not has_both:
-            prior = self.star_prior()
-            if prior is None:
+            star = self.star_prior()
+            if star is None and self.background is None:
                 return graph_propagate(self.weights, idx, val.astype(float))
-            # Relativo ao grau médio, para o prior pesar o mesmo com ou sem as arestas de borda.
+            # Pesos relativos ao grau médio, para valerem o mesmo com ou sem as arestas de borda.
+            # Estrela (alvo = estrela) e fundo (alvo = 0) somam-se: λ·p = λ_e·estrela + λ_f·0.
             degree = float(self.weights.sum()) / self.n_superpixels
-            weight = degree * self.config.radial_weight / len(self.clicks) ** self.config.radial_decay
-            return graph_propagate(self.weights, idx, val.astype(float), prior=prior, prior_weight=weight)
+            decay = len(self.clicks) ** self.config.radial_decay
+            lam_star = degree * self.config.radial_weight / decay if star is not None else 0.0
+            lam_bg = 0.0
+            if self.background is not None:
+                lam_bg = degree * self.config.background_prior * self.background / decay
+            lam = lam_star + lam_bg
+            target = np.zeros(self.n_superpixels) if star is None else lam_star * star / np.maximum(lam, 1e-12)
+            return graph_propagate(self.weights, idx, val.astype(float), prior=target, prior_weight=lam + 1e-12)
         x_train, y_train = self.features[idx], val
         if mode == "rf":
             model = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=0)

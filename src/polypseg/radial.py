@@ -29,6 +29,7 @@ def star_contour(
     constraints: list[tuple[int, int, bool]] = (),
     margin: float = 3.0,
     valid: np.ndarray | None = None,
+    bright_dome: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Ângulos e raios (em pixels) do contorno fechado de maior evidência de borda.
 
@@ -36,6 +37,9 @@ def star_contour(
     passar a pelo menos ``margin`` px por fora de cada clique de pólipo e por dentro de cada
     clique de fundo, nos ângulos vizinhos ao do clique. É assim que os cliques seguintes
     corrigem a estrela em vez de brigar com ela.
+
+    ``bright_dome=False`` troca a polaridade: procura clareamento ao sair do clique, para
+    pólipos mais escuros que a mucosa.
 
     ``valid`` marca o tecido (fora da moldura preta): o escurecimento na entrada da moldura não
     conta como borda, e cada raio fica mais caro depois de sair do tecido.
@@ -57,7 +61,7 @@ def star_contour(
         # Com a luz junto da câmera, a cúpula, mais próxima, é mais clara que a mucosa em volta.
         # Escolher a polaridade por imagem piorou o contorno na base de desenvolvimento.
         lum = ndi.map_coordinates(ndi.gaussian_filter(luminance, 2.0), [rows, cols], order=1, mode="nearest")
-        drop = np.clip(-np.gradient(lum, axis=1), 0.0, None)
+        drop = np.clip((-1.0 if bright_dome else 1.0) * np.gradient(lum, axis=1), 0.0, None)
         if valid is not None:
             drop[ndi.map_coordinates(valid.astype(float), [rows, cols], order=0, mode="constant", cval=0.0) < 0.5] = 0.0
         drop = np.clip(drop / max(float(np.percentile(drop, 99)), 1e-8), 0.0, 1.0)
@@ -109,6 +113,21 @@ def _circular_dp(cost: np.ndarray, max_step: int) -> tuple[np.ndarray, float]:
         path[t - 1] = back[t, path[t]]
     middle = path[n_angles : 2 * n_angles]
     return middle, float(cost[np.arange(n_angles), middle].sum())
+
+
+def region_separation(lab: np.ndarray, mask: np.ndarray, valid: np.ndarray | None = None, ring: int = 10) -> float:
+    """Separação de cor entre a região e um anel em volta: Σ (μ_dentro − μ_fora)² / (σ²_dentro + σ²_fora).
+
+    É o critério de Fisher por canal em Lab; julga o contorno pela região, como Chan e Vese
+    (2001), e não pela força da borda que a programação dinâmica já usou.
+    """
+    outside = ndi.binary_dilation(mask, iterations=ring) & ~mask
+    if valid is not None:
+        outside &= valid
+    if mask.sum() < 20 or outside.sum() < 20:
+        return 0.0
+    a, b = lab[mask], lab[outside]
+    return float((((a.mean(0) - b.mean(0)) ** 2) / (a.var(0) + b.var(0) + 1e-6)).sum())
 
 
 def star_mask(shape: tuple[int, int], center: tuple[int, int], angles: np.ndarray, radii: np.ndarray) -> np.ndarray:

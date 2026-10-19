@@ -47,7 +47,9 @@ pip install -e ".[data]"
 python scripts/download_data.py
 ```
 
-O script baixa para `data/` o Kvasir-SEG completo (1000 imagens) e os cinco
+O script baixa para `data/` o Kvasir-SEG completo (1000 imagens), uma base de
+desenvolvimento com 120 imagens do CVC-ClinicDB do treino do PraNet
+(`data/CVC-ClinicDB-dev`, sem sobreposição com o teste) e os cinco
 conjuntos de teste do protocolo PraNet: CVC-300 (60), CVC-ClinicDB (62),
 CVC-ColonDB (380), ETIS-LaribPolypDB (196) e Kvasir (100). Os arquivos vêm de
 espelhos no Hugging Face, porque o site oficial do Kvasir-SEG não passa na
@@ -294,6 +296,8 @@ QT_QPA_PLATFORM=offscreen pytest
 ```
 
 ## Próximos passos
+
+Técnicas clássicas já testadas e pendentes, com resultados: [TODO.md](TODO.md).
 
 - Validar a correção da moldura numa base de desenvolvimento só com imagens CVC
   (por exemplo, as 550 do CVC-ClinicDB no treino do PraNet) e rodar um teste limpo.

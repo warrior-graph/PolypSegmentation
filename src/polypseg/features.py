@@ -23,6 +23,7 @@ class FeatureConfig:
     glcm: bool = True
     gabor: bool = True
     relief: bool = False
+    hemoglobin: bool = False
     lbp_radii: tuple[int, ...] = (1, 2)
     glcm_levels: int = 16
     gabor_frequencies: tuple[float, ...] = (0.1, 0.25)
@@ -220,6 +221,12 @@ def compute_features(image: np.ndarray, labels: np.ndarray, config: FeatureConfi
         f, nm = gabor_features(gray, labels, counts, config.gabor_frequencies, config.gabor_orientations)
         blocks.append(f)
         names += nm
+    if config.hemoglobin:
+        from polypseg.boundary import hemoglobin_index
+
+        mean, std = _mean_std(hemoglobin_index(image), labels, counts)
+        blocks.append(np.stack([mean, std], axis=1))
+        names += ["ihb_mean", "ihb_std"]
     if config.relief:
         f, nm = relief_features(gray, labels, counts, config.relief_scales, config.relief_surround)
         blocks.append(f)

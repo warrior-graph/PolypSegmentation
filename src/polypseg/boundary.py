@@ -14,6 +14,7 @@ from scipy import ndimage as ndi
 from scipy import sparse
 from skimage import color
 from skimage.feature import hessian_matrix
+from skimage.filters import frangi
 
 from polypseg.preprocessing import border_mask
 
@@ -29,16 +30,38 @@ def valley_map(channel: np.ndarray, scales: tuple[float, ...] = (2.0, 4.0)) -> n
     return out
 
 
+def hemoglobin_index(image: np.ndarray) -> np.ndarray:
+    """IHb = 32·log₂(R/G): o verde é muito absorvido pela hemoglobina e o vermelho quase não.
+
+    Índice usado nos processadores de endoscopia para realçar a vascularização; por ser uma
+    razão, não depende do brilho.
+    """
+    return 32.0 * np.log2((image[..., 0] + 1e-3) / (image[..., 1] + 1e-3))
+
+
+def vesselness(image: np.ndarray, sigmas: tuple[float, ...] = (1.0, 2.0, 3.0)) -> np.ndarray:
+    """Resposta de Frangi a estruturas tubulares escuras no canal verde, onde os vasos aparecem."""
+    return frangi(image[..., 1].astype(np.float64), sigmas=sigmas, black_ridges=True)
+
+
 def _normalize(values: np.ndarray, valid: np.ndarray, q: float = 99.0) -> np.ndarray:
     top = np.percentile(values[valid], q) if valid.any() else 1.0
     return np.clip(values / max(top, 1e-8), 0.0, 1.0)
 
 
-def boundary_map(image: np.ndarray, valley_weight: float = 0.5, extra: np.ndarray | None = None) -> np.ndarray:
+def boundary_map(
+    image: np.ndarray,
+    valley_weight: float = 0.5,
+    extra: np.ndarray | None = None,
+    hemoglobin: bool = False,
+    vessel_weight: float = 0.0,
+) -> np.ndarray:
     """Evidência de borda em [0, 1]: vale no canal B e gradiente em Lab, zerados na moldura.
 
     ``extra`` (já em [0, 1]) entra com o mesmo peso do gradiente, para somar outras pistas
-    de borda, como a descontinuidade do relevo.
+    de borda, como a descontinuidade do relevo. ``hemoglobin`` soma o gradiente do índice
+    de hemoglobina do mesmo jeito. ``vessel_weight`` atenua a borda onde há vasos (Frangi),
+    que são vales finos e não bordas de pólipo.
     """
     frame = ndi.binary_dilation(border_mask(image), iterations=4)
     valid = ~frame
@@ -51,7 +74,12 @@ def boundary_map(image: np.ndarray, valley_weight: float = 0.5, extra: np.ndarra
     grad = _normalize(np.sqrt(grad), valid)
     if extra is not None:
         grad = np.maximum(grad, extra)
+    if hemoglobin:
+        ihb = ndi.gaussian_filter(hemoglobin_index(image), 1.5)
+        grad = np.maximum(grad, _normalize(np.hypot(ndi.sobel(ihb, 0), ndi.sobel(ihb, 1)), valid))
     out = valley_weight * valley + (1 - valley_weight) * grad
+    if vessel_weight > 0:
+        out *= 1.0 - vessel_weight * _normalize(vesselness(image), valid)
     out[frame] = 0.0
     return out
 

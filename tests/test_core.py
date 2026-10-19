@@ -1,5 +1,7 @@
 import numpy as np
 import pytest
+from scipy import ndimage as ndi
+from skimage import color
 from skimage.feature import graycomatrix, graycoprops
 
 from polypseg.features import FeatureConfig, compute_features, feature_group, glcm_features, relief_features
@@ -277,3 +279,46 @@ def test_smooth_mask_rounds_a_jagged_disc():
     assert dice(smooth, gt) > dice(jagged, gt) + 0.03
     assert smooth[64, 64]
     assert smooth_mask(jagged, 0.0) is jagged
+
+
+def test_boundary_connectivity_marks_border_regions_as_background():
+    from polypseg.background import boundary_connectivity
+
+    image, gt = _dark_rim_disc(size=128, radius=30)
+    labels = compute_superpixels(image, SuperpixelConfig(n_segments=100))
+    border = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    bg = boundary_connectivity(image, labels, border)
+    inside = np.bincount(labels.ravel(), weights=gt.ravel()) / np.bincount(labels.ravel()) > 0.5
+    assert bg[inside].mean() < 0.2 < 0.5 < bg[~inside].mean()
+
+
+def test_region_separation_prefers_the_true_disc():
+    from polypseg.radial import region_separation
+
+    image, gt = _dark_rim_disc(size=128, radius=30)
+    lab = color.rgb2lab(image)
+    yy, xx = np.mgrid[:128, :128]
+    small = np.hypot(yy - 64, xx - 64) < 12
+    big = np.hypot(yy - 64, xx - 64) < 50
+    assert region_separation(lab, gt) > max(region_separation(lab, small), region_separation(lab, big))
+
+
+def test_hemoglobin_index_and_vessel_options_keep_map_in_range():
+    from polypseg.boundary import boundary_map, hemoglobin_index
+
+    image, _ = _dark_rim_disc()
+    ihb = hemoglobin_index(image)
+    assert ihb[48, 48] > 0  # R > G no disco avermelhado
+    bmap = boundary_map(image, hemoglobin=True, vessel_weight=1.0)
+    assert bmap.min() >= 0 and bmap.max() <= 1
+
+
+def test_snake_band_only_changes_the_band():
+    from polypseg.refine import snake_band
+
+    image, gt = _dark_rim_disc(size=128, radius=30)
+    blocky = np.zeros_like(gt)
+    blocky[38:90, 38:90] = True
+    out = snake_band(image, blocky, [(64, 64, True)], iterations=20, band=8)
+    far = ~ndi.binary_dilation(blocky, iterations=8) | ndi.binary_erosion(blocky, iterations=8)
+    assert np.array_equal(out[far], blocky[far])

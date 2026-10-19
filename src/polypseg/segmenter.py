@@ -22,7 +22,7 @@ from polypseg.refine import refine_band, smooth_mask, snake_band
 from polypseg.relief import relief_edges
 from polypseg.superpixels import SuperpixelConfig, adjacency, compute_superpixels
 
-CLASSIFIERS = ("graph", "hybrid", "svm", "rf")
+CLASSIFIERS = ("graph", "hybrid", "svm", "rf", "xgb")
 
 
 @dataclass
@@ -475,6 +475,17 @@ class InteractiveSegmenter:
         x_train, y_train = self.features[idx], val
         if mode == "rf":
             model = RandomForestClassifier(n_estimators=100, class_weight="balanced", random_state=0)
+            model.fit(x_train, y_train)
+            return model.predict_proba(self.features)[:, 1]
+        if mode == "xgb":
+            # Extra opcional: pip install -e ".[xgb]". n_jobs=1 porque a avaliação já roda em paralelo.
+            from xgboost import XGBClassifier
+
+            n_pos = int((y_train == 1).sum())
+            model = XGBClassifier(
+                n_estimators=100, max_depth=3, learning_rate=0.3, n_jobs=1, verbosity=0,
+                scale_pos_weight=(y_train.size - n_pos) / max(n_pos, 1),  # equivale ao class_weight="balanced"
+            )
             model.fit(x_train, y_train)
             return model.predict_proba(self.features)[:, 1]
         # Kernel linear: com poucos cliques o RBF só reconhece o próprio superpixel clicado.

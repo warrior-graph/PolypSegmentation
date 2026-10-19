@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 data = ["huggingface_hub>=0.24", "remotezip>=0.12"]
+xgb = ["xgboost>=2.0"]
 
 [project.scripts]
 polypseg-gui = "polypseg.gui.app:main"

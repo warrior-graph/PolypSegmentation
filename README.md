@@ -150,7 +150,9 @@ melhorou a avaliação.
 Os modelos alternativos são: `hybrid` (um SVM linear dá a probabilidade inicial
 e o random walker suaviza), `svm` (SVM linear) e `rf` (Random Forest). Todos
 foram piores que o grafo puro, porque treinar classificadores com poucos cliques
-gera muita variância.
+gera muita variância. Também há `xgb` (XGBoost, 100 árvores de profundidade 3, com as
+classes balanceadas como no `rf`), ainda não avaliado; requer o extra opcional:
+`pip install -e ".[xgb]"`.
 
 **Limitação conhecida:** a estrela supõe uma cúpula mais clara que a mucosa em volta.
 Num pólipo mais escuro que o entorno o contorno sai pequeno e o 1º clique piora; na

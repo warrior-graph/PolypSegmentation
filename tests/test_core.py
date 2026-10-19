@@ -117,6 +117,12 @@ def test_graph_propagate_respects_seeds():
     cut = graph_cut(w, np.array([0, 4]), np.array([1.0, 0.0]), prior=prior, prior_weight=np.array([0, 0, 0, 2.0, 0]))
     assert cut.tolist() == [1, 1, 1, 1, 0]
 
+    from polypseg.segmenter import geodesic_star
+
+    # A aresta fraca 2-3 fica no caminho de 4 até a fonte: o nó 3 não pode passar do nó 2.
+    star = geodesic_star(w, np.array([1.0, 0.9, 0.2, 0.8, 0.0]), np.array([0]))
+    assert np.allclose(star, [1.0, 0.9, 0.2, 0.2, 0.0])
+
 
 @pytest.mark.parametrize("classifier", CLASSIFIERS)
 def test_segmenter_segments_synthetic_polyp(synthetic, classifier):
@@ -261,6 +267,7 @@ def test_local_relief_is_positive_on_bright_dome():
 @pytest.mark.parametrize("flags", [
     {"boundary_edges": True},
     {"boundary_edges": True, "radial_prior": True, "graph_solver": "cut"},
+    {"boundary_edges": True, "radial_prior": True, "geodesic_star": True, "geodesic_prior": 0.1},
     {"radial_prior": True},
     {"pixel_refine": True},
     {"boundary_edges": True, "radial_prior": True, "pixel_refine": True, "relief_map": True},

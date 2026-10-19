@@ -39,6 +39,18 @@ Segunda rodada (Python 3.14, bibliotecas atuais; o padrão deu 4,96 e 7,03 em ve
 | T10 Pesos ao quadrado (família do power watershed) | removida | 5,17 | 7,20 | 0,702 | 0,545 |
 | T10 Pesos na 4ª potência | removida | 5,46 | 7,41 | 0,704 | 0,545 |
 | T10 Pesos na 8ª potência | removida | 5,54 | 7,41 | 0,704 | 0,545 |
+| T2 Estrela geodésica (restrição na floresta IFT) | `geodesic_star=True` | 5,04 | 7,03 | 0,688 | 0,546 |
+| T2 Prior geodésico, peso fixo 0,015 | removida | 4,91 | 6,83 | 0,698 | 0,556 |
+| T2 Prior geodésico, peso fixo 0,03 | removida | 4,96 | 6,87 | 0,700 | 0,562 |
+| T2 Prior geodésico, peso fixo 0,05 | removida | 4,94 | 6,78 | 0,704 | 0,568 |
+| T2 Prior geodésico, peso fixo 0,1 | removida | 5,12 | 6,98 | 0,711 | 0,577 |
+| T2 Prior geodésico, peso fixo 0,3 | removida | 5,62 | 7,08 | 0,726 | 0,594 |
+| T2 Prior geodésico ÷ nº de cliques, 0,1 | `geodesic_prior=0.1` | 4,90 | 6,86 | 0,711 | 0,577 |
+| **T2 Prior geodésico ÷ nº de cliques, 0,2** | `geodesic_prior=0.2` | **4,89** | **6,68** | 0,725 | 0,587 |
+| T2 Prior geodésico ÷ nº de cliques, 0,3 | `geodesic_prior=0.3` | 4,91 | 6,81 | 0,726 | 0,594 |
+| T2 Prior geodésico ÷ nº de cliques, 0,6 | `geodesic_prior=0.6` | 5,54 | 6,99 | 0,699 | 0,593 |
+| T2 Prior geodésico ÷ nº de cliques, 1,0 | `geodesic_prior=1.0` | 5,78 | 7,11 | 0,682 | 0,578 |
+| T2 0,3 + GMM no 1º clique | `geodesic_prior=0.3, radial_color_model=10` | 4,95 | 6,89 | 0,734 | 0,598 |
 
 Observações:
 
@@ -84,9 +96,21 @@ IoU ≥ 0,90 (52% no Kvasir).
   borda fina, e no CVC também pelos superpixels (teto baixo). T9 (várias tesselações) e o
   refino por pixel atacam isso.
 
+- [x] T2: **passou no corte.** O prior geodésico (Bai e Sapiro, 2007) puxa cada superpixel para
+      d_fundo / (d_pólipo + d_fundo), com distâncias de caminho mínimo no próprio grafo (custo
+      −log w por aresta, IFT de Falcão et al., 2004) até os cliques de pólipo e até as sementes
+      de fundo (cliques de fundo e superpixels de borda). Com peso 0,2 dividido pelo nº de
+      cliques, o NoC@85 cai 0,35 no CVC e 0,07 no Kvasir, e o Dice@1 sobe 0,04 nas duas bases;
+      o Dice@3 sobe 0,08 no CVC e cai 0,01 no Kvasir. De 0,1 a 0,3 o resultado é parecido;
+      a partir de 0,6 o Kvasir piora muito. Com peso fixo também ajuda o CVC, mas pesos altos
+      atrapalham as correções. A restrição de estrela geodésica de Gulshan et al. (2010),
+      imposta como p(nó) ≤ p(pai) na floresta a partir dos cliques, não muda nada: o vazamento
+      passa pelo próprio caminho geodésico. Somar a GMM do 1º clique não acrescenta.
+      Próximo passo: `geodesic_prior=0.2` entra no fatorial e no teste único.
+
 ## Pendentes
 
-- [ ] T2 Estrela geodésica e transformada imagem-floresta (Falcão et al., 2004; Gulshan et al., 2010)
+- [x] T2 Estrela geodésica e transformada imagem-floresta (Falcão et al., 2004; Gulshan et al., 2010)
 - [ ] T4 Normalização da iluminação por Retinex multiescala (Jobson et al., 1997)
 - [ ] T6 Reflexos especulares como pista de cúpula (hipótese sem apoio publicado)
 - [ ] T9 Várias tesselações ou hierarquia OWT-UCM (Arbeláez et al., 2011)

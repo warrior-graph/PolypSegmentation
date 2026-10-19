@@ -39,6 +39,14 @@ class SegmenterConfig:
     graph_beta: float = 0.5
     # "walker" (random walker) ou "cut" (corte mínimo s-t com o mesmo grafo e os mesmos priors).
     graph_solver: str = "walker"
+    # Estrela geodésica (Gulshan et al., 2010) no grafo de superpixels: cada superpixel só fica
+    # com a probabilidade de pólipo do seu pai na floresta de caminhos mínimos (IFT, Falcão et
+    # al., 2004) que parte dos cliques de pólipo, com custo −log w por aresta.
+    geodesic_star: bool = False
+    # Prior geodésico (Bai e Sapiro, 2007; 0 desliga): d_fundo / (d_pólipo + d_fundo), com as
+    # distâncias geodésicas aos cliques de pólipo e às sementes de fundo, peso relativo ao grau e
+    # dividido pelo nº de cliques, como o da estrela.
+    geodesic_prior: float = 0.0
     # Cada grupo de descritores pesa o mesmo na distância do grafo, qualquer que seja o número de colunas.
     balance_groups: bool = False
     # Corta arestas cuja fronteira coincide com o mapa de borda (vale no canal B + gradiente).
@@ -177,6 +185,34 @@ def graph_cut(
     x = np.zeros(n)
     x[reach[reach < n]] = 1.0
     return x
+
+
+def geodesic_forest(weights: sparse.csr_matrix, sources: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Floresta de caminhos mínimos a partir das fontes (IFT com custo aditivo −log w por aresta).
+
+    Devolve a distância de cada nó à fonte mais próxima e o predecessor no caminho (−9999 nas
+    fontes e nos nós inalcançáveis).
+    """
+    from scipy.sparse.csgraph import dijkstra
+
+    cost = weights.tocsr(copy=True)
+    cost.data = -np.log(np.clip(cost.data, 1e-300, 1.0)) + 1e-9  # zero explícito não é aresta
+    dist, pred, _ = dijkstra(cost, directed=False, indices=sources, min_only=True, return_predecessors=True)
+    return dist, pred
+
+
+def geodesic_star(weights: sparse.csr_matrix, prob: np.ndarray, sources: np.ndarray) -> np.ndarray:
+    """Impõe a convexidade em estrela geodésica: p(nó) ≤ p(pai) ao longo da floresta.
+
+    Com o limiar, um superpixel só é pólipo se todo o caminho geodésico até o clique também for.
+    """
+    dist, pred = geodesic_forest(weights, sources)
+    out = prob.copy()
+    out[~np.isfinite(dist)] = 0.0
+    for i in np.argsort(dist):
+        if pred[i] >= 0:
+            out[i] = min(out[i], out[pred[i]])
+    return out
 
 
 class InteractiveSegmenter:
@@ -380,6 +416,8 @@ class InteractiveSegmenter:
 
         prob = self._superpixel_probability(idx, val)
         prob[idx] = val
+        if self.config.geodesic_star:
+            prob = geodesic_star(self.weights, prob, idx[val == 1])
         mask = prob[self.labels] > self.config.threshold
         if self.config.pixel_refine:
             clicks = [(c.row, c.col, c.positive) for c in self.clicks]
@@ -398,19 +436,22 @@ class InteractiveSegmenter:
         has_both = (val == 0).any() and (val == 1).any()
         if mode == "graph" or not has_both:
             star = self.star_prior()
+            geo = self._geodesic_prior(idx, val) if self.config.geodesic_prior > 0 else None
             solve = graph_cut if self.config.graph_solver == "cut" else graph_propagate
-            if star is None and self.background is None:
+            if star is None and self.background is None and geo is None:
                 return solve(self.weights, idx, val.astype(float))
             # Pesos relativos ao grau médio, para valerem o mesmo com ou sem as arestas de borda.
-            # Estrela (alvo = estrela) e fundo (alvo = 0) somam-se: λ·p = λ_e·estrela + λ_f·0.
+            # Os priors somam-se: λ·p = λ_e·estrela + λ_f·0 + λ_g·geodésico.
             degree = float(self.weights.sum()) / self.n_superpixels
             decay = len(self.clicks) ** self.config.radial_decay
             lam_star = degree * self.config.radial_weight / decay if star is not None else 0.0
             lam_bg = 0.0
             if self.background is not None:
                 lam_bg = degree * self.config.background_prior * self.background / decay
-            lam = lam_star + lam_bg
-            target = np.zeros(self.n_superpixels) if star is None else lam_star * star / np.maximum(lam, 1e-12)
+            lam_geo = degree * self.config.geodesic_prior / decay if geo is not None else 0.0
+            lam = lam_star + lam_bg + lam_geo
+            pull = (0.0 if star is None else lam_star * star) + (0.0 if geo is None else lam_geo * geo)
+            target = np.broadcast_to(pull, (self.n_superpixels,)) / np.maximum(lam, 1e-12)
             return solve(self.weights, idx, val.astype(float), prior=target, prior_weight=lam + 1e-12)
         x_train, y_train = self.features[idx], val
         if mode == "rf":
@@ -428,6 +469,16 @@ class InteractiveSegmenter:
                 self.weights, idx, val.astype(float), prior=prob, prior_weight=self.config.graph_prior_weight
             )
         raise ValueError(f"classificador desconhecido: {mode!r}")
+
+    def _geodesic_prior(self, idx: np.ndarray, val: np.ndarray) -> np.ndarray | None:
+        """d_fundo / (d_pólipo + d_fundo) por superpixel, pelas distâncias geodésicas às sementes."""
+        if not (val == 0).any():
+            return None
+        d_fg, _ = geodesic_forest(self.weights, idx[val == 1])
+        d_bg, _ = geodesic_forest(self.weights, idx[val == 0])
+        d_fg = np.minimum(d_fg, 1e6)
+        d_bg = np.minimum(d_bg, 1e6)
+        return d_bg / np.maximum(d_fg + d_bg, 1e-12)
 
     def _postprocess(self, mask: np.ndarray) -> np.ndarray:
         if self.config.keep_connected and mask.any():
